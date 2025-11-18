@@ -1,41 +1,26 @@
-name: Deadpan Uploader Automation
-
+name: Run Python Script
 
 on:
-push:
-branches:
-- main
-
+  push:
+    branches:
+      - main
 
 jobs:
-upload-video:
-runs-on: ubuntu-latest
+  run-script:
+    runs-on: ubuntu-latest
 
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-steps:
-- name: Checkout repository
-uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
 
+      - name: Install dependencies
+        run: |
+          pip install google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client
 
-- name: Set up Python
-uses: actions/setup-python@v4
-with:
-python-version: '3.12'
-
-
-- name: Install dependencies
-  run: |
-    pip install google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client
-
-
-
-- name: Create client_secret.json from GitHub Secret
-run: |
-mkdir -p src
-echo "$CLIENT_SECRET_JSON" > src/client_secret.json
-env:
-CLIENT_SECRET_JSON: ${{ secrets.CLIENT_SECRET_JSON }}
-
-
-- name: Run uploader
-run: python src/main.py
+      - name: Run main script
+        run: python src/main.py
