@@ -1,0 +1,12 @@
+
+--- Upload avviato: 2025-11-18 17:56:22.644256 ---
+Caricato: documento.txt → C:\Users\Utente\deadpan-uploader\uploaded\documento.txt
+Caricato: foto1.jpg → C:\Users\Utente\deadpan-uploader\uploaded\foto1.jpg
+Caricato: note.pdf → C:\Users\Utente\deadpan-uploader\uploaded\note.pdf
+✔️ Upload completato: 2025-11-18 17:56:22.644256
+
+--- Upload avviato: 2025-11-18 19:16:25.609992 ---
+Caricato: documento.txt → C:\Users\Utente\deadpan-uploader\uploaded\documento.txt
+Caricato: foto1.jpg → C:\Users\Utente\deadpan-uploader\uploaded\foto1.jpg
+Caricato: note.pdf → C:\Users\Utente\deadpan-uploader\uploaded\note.pdf
+✔️ Upload completato: 2025-11-18 19:16:25.609992
