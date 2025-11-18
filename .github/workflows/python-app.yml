@@ -24,12 +24,9 @@ python-version: '3.12'
 
 
 - name: Install dependencies
-run: |
-pip install google-auth
-␀
-google-auth-oauthlib
-google-auth-httplib2
-google-api-python-client
+  run: |
+    pip install google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client
+
 
 
 - name: Create client_secret.json from GitHub Secret
