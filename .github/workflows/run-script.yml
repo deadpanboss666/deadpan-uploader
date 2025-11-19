@@ -16,11 +16,16 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.10'
+        python-version: "3.10"
 
     - name: Install dependencies
-      run: |
-        pip install -r requirements.txt || true
+      run: pip install -r requirements.txt
 
-    - name: Run main script
+    - name: Write service account credentials
+      run: echo "${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}" > service-account.json
+
+    - name: Set GOOGLE_APPLICATION_CREDENTIALS
+      run: echo "GOOGLE_APPLICATION_CREDENTIALS=$(pwd)/service-account.json" >> $GITHUB_ENV
+
+    - name: Run script
       run: python src/main.py

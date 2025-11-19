@@ -1,9 +1,9 @@
-name: Run Python Script
+name: Build and Run Deadpan Uploader
 
 on:
   push:
-    branches: [ "main" ]
-  workflow_dispatch:
+    branches:
+      - main
 
 jobs:
   build:
@@ -16,13 +16,19 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.12'
+          python-version: '3.10'
 
       - name: Install dependencies
         run: |
-          pip install google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client
+          pip install --upgrade pip
+          pip install -r requirements.txt
 
-      - name: Run main script
-        env:
-          GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
+      - name: Create GCP credentials file
+        run: |
+          echo "$CLIENT_SECRET_JSON" > service-account.json
+
+      - name: Set GOOGLE_APPLICATION_CREDENTIALS
+        run: echo "GOOGLE_APPLICATION_CREDENTIALS=$GITHUB_WORKSPACE/service-account.json" >> $GITHUB_ENV
+
+      - name: Run script
         run: python src/main.py
