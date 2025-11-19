@@ -1,58 +1,38 @@
 import os
 import json
-from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+from google.oauth2.service_account import Credentials
 
-# ---------------------------------------------
-#   CREA IL SERVIZIO YOUTUBE DAL SERVICE ACCOUNT
-#   USA LA VARIABILE CORRETTA:
-#   GOOGLE_APPLICATION_CREDENTIALS_JSON
-# ---------------------------------------------
 def get_youtube_service():
-    # Carica il contenuto JSON dalle variabili di ambiente
-    info = json.loads(os.environ["GOOGLE_APPLICATION_CREDENTIALS_JSON"])
+    print("[Monday] Carico credenziali dal file JSON locale...")
 
-    # Crea le credenziali dal dizionario JSON
-    credentials = service_account.Credentials.from_service_account_info(
-        info,
+    credentials_path = os.path.join(os.path.dirname(__file__), "service-account.json")
+
+    if not os.path.exists(credentials_path):
+        raise FileNotFoundError(f"File delle credenziali non trovato: {credentials_path}")
+
+    creds = Credentials.from_service_account_file(
+        credentials_path,
         scopes=["https://www.googleapis.com/auth/youtube.upload"]
     )
 
-    # Inizializza il servizio YouTube
-    youtube = build("youtube", "v3", credentials=credentials)
-    return youtube
+    print("[Monday] Credenziali caricate correttamente!")
+    return build("youtube", "v3", credentials=creds)
 
-
-# ---------------------------------------------
-#   FUNZIONE PER CARICARE IL VIDEO
-# ---------------------------------------------
-def upload_video(video_path: str, title: str, description: str) -> None:
-    print("[Monday] Preparazione upload video...")
-
+def upload_video(video_path, title, description):
+    print("[Monday] Connessione al servizio YouTube...")
     youtube = get_youtube_service()
 
-    # Metadata video
-    body = {
-        "snippet": {
-            "title": title,
-            "description": description,
-            "tags": ["automation", "deadpan", "bot"]
-        },
-        "status": {
-            "privacyStatus": "public"
-        }
-    }
-
-    # Carica file
-    media = MediaFileUpload(video_path, chunksize=-1, resumable=True)
-
-    print("[Monday] Invio richiesta a YouTube...")
+    print("[Monday] Upload del video in corso...")
     request = youtube.videos().insert(
         part="snippet,status",
-        body=body,
-        media_body=media
+        body={
+            "snippet": {"title": title, "description": description},
+            "status": {"privacyStatus": "private"}
+        },
+        media_body=video_path
     )
 
     response = request.execute()
-    print(f"[Monday] ✅ Video caricato! ID: {response['id']}")
+    print("[Monday] Upload completato!")
+    return response
