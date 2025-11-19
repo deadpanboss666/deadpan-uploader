@@ -4,46 +4,56 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
+
 def get_youtube_service():
-    # Service account key JSON viene preso dal secret GitHub Actions
-    key_content = os.getenv("GOOGLE_SERVICE_ACCOUNT_KEY")
+    """
+    Restituisce un client YouTube autenticato usando
+    il service account caricato come secret GitHub.
+    """
 
-    if not key_content:
-        raise Exception("Environment variable GOOGLE_SERVICE_ACCOUNT_KEY is missing.")
+    # Carichiamo il JSON dal secret GCP_SERVICE_ACCOUNT_JSON
+    info = json.loads(os.environ["GCP_SERVICE_ACCOUNT_JSON"])
 
-    # Carica JSON da stringa
-    info = json.loads(key_content)
+    # Creiamo le credenziali dal JSON
+    creds = service_account.Credentials.from_service_account_info(
+        info,
+        scopes=["https://www.googleapis.com/auth/youtube.upload"]
+    )
 
-    # Scope richiesti per YouTube upload
-    scopes = ["https://www.googleapis.com/auth/youtube.upload"]
-
-    credentials = service_account.Credentials.from_service_account_info(info, scopes=scopes)
-
-    service = build("youtube", "v3", credentials=credentials)
-    return service
+    # Costruiamo il client YouTube
+    return build("youtube", "v3", credentials=creds)
 
 
 def upload_video():
+    """
+    Carica automaticamente il video presente nella cartella:
+    src/video.mp4
+    """
+
+    video_path = "src/video.mp4"
+
+    if not os.path.exists(video_path):
+        print("[Monday] ERRORE: Il file del video non esiste:", video_path)
+        return None
+
     youtube = get_youtube_service()
 
-    video_path = "videos_to_upload/video.mp4"
-    title = "Video caricato automaticamente"
-    description = "Upload automatico tramite GitHub Actions"
-    tags = ["automation", "github", "bot"]
-
+    # Metadata del video
     request_body = {
         "snippet": {
-            "categoryId": "22",
-            "title": title,
-            "description": description,
-            "tags": tags
+            "title": "Video caricato automaticamente",
+            "description": "Upload automatico tramite GitHub Actions",
+            "tags": ["auto-upload", "github-actions"],
+            "categoryId": "22"  # People & Blogs (default)
         },
         "status": {
-            "privacyStatus": "unlisted"
+            "privacyStatus": "public"
         }
     }
 
     media = MediaFileUpload(video_path, chunksize=-1, resumable=True)
+
+    print("[Monday] Upload del video iniziato...")
 
     request = youtube.videos().insert(
         part="snippet,status",
@@ -52,6 +62,13 @@ def upload_video():
     )
 
     response = request.execute()
-    print("Upload completato. Video ID:", response.get("id"))
+
+    print("[Monday] Upload completato!")
+    print("[Monday] Video ID:", response.get("id"))
 
     return response.get("id")
+
+
+if __name__ == "__main__":
+    print("[Monday] Avvio upload automatico...")
+    upload_video()
