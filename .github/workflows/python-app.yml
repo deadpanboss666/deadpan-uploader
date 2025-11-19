@@ -18,11 +18,15 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Set env vars
+        run: |
+          echo "GCP_SERVICE_ACCOUNT_JSON=${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}" >> $GITHUB_ENV
+
       - name: Install dependencies
         run: |
-          pip install google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
       - name: Run main script
-        env:
-          GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
-        run: python src/main.py
+        run: |
+          python src/main.py
