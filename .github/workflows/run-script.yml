@@ -18,9 +18,13 @@ jobs:
       with:
         python-version: '3.10'
 
-    - name: Install dependencies
+    - name: Export Google service account JSON
       run: |
-        pip install -r requirements.txt || true
+        echo "${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}" > service-account.json
+        echo "GOOGLE_APPLICATION_CREDENTIALS=$(pwd)/service-account.json" >> $GITHUB_ENV
+
+    - name: Install dependencies
+      run: pip install -r requirements.txt
 
     - name: Run main script
       run: python src/main.py
