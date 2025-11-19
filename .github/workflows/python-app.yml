@@ -2,7 +2,7 @@ name: Run Python Script
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   workflow_dispatch:
 
 jobs:
@@ -10,22 +10,24 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+    - name: Checkout repository
+      uses: actions/checkout@v3
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.12"
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.10"
 
-      - name: Set environment vars
-        run: |
-          echo "GOOGLE_APPLICATION_CREDENTIALS_JSON=${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}" >> $GITHUB_ENV
+    # ⚠ QUI CARICHIAMO I SEGRETI COME VARIABILI D'AMBIENTE
+    - name: Set environment vars
+      run: |
+        echo "GCP_SERVICE_ACCOUNT_JSON=${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}" >> $GITHUB_ENV
 
-      - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
+    - name: Install dependencies
+      run: |
+        pip install --upgrade pip
+        pip install -r requirements.txt
 
-      - name: Run main script
-        run: python src/main.py
+    - name: Run main script
+      run: |
+        python src/main.py
