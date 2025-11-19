@@ -1,9 +1,9 @@
-name: Run Python Script
+name: Python Application
 
 on:
   push:
-    branches: [ "main" ]
-  workflow_dispatch:
+    branches:
+      - main
 
 jobs:
   build:
@@ -16,19 +16,18 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: "3.10"
+        python-version: '3.10'
 
     - name: Install dependencies
       run: |
-        pip install --upgrade pip
         pip install -r requirements.txt
 
     - name: Create GCP credentials file
       run: |
-        echo "${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}" > $HOME/service_account.json
+        echo "${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}" > gcp_credentials.json
 
     - name: Set GOOGLE_APPLICATION_CREDENTIALS
-      run: echo "GOOGLE_APPLICATION_CREDENTIALS=$HOME/service_account.json" >> $GITHUB_ENV
+      run: echo "GOOGLE_APPLICATION_CREDENTIALS=${{ github.workspace }}/gcp_credentials.json" >> $GITHUB_ENV
 
-    - name: Run main script
+    - name: Run script
       run: python src/main.py
