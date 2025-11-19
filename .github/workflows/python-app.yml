@@ -1,4 +1,4 @@
-name: Python Application
+name: Build and Run Deadpan Uploader
 
 on:
   push:
@@ -10,24 +10,25 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.10'
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
 
-    - name: Install dependencies
-      run: |
-        pip install -r requirements.txt
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
 
-    - name: Create GCP credentials file
-      run: |
-        echo "${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}" > gcp_credentials.json
+      - name: Create GCP credentials file
+        run: |
+          echo "$CLIENT_SECRET_JSON" > service-account.json
 
-    - name: Set GOOGLE_APPLICATION_CREDENTIALS
-      run: echo "GOOGLE_APPLICATION_CREDENTIALS=${{ github.workspace }}/gcp_credentials.json" >> $GITHUB_ENV
+      - name: Set GOOGLE_APPLICATION_CREDENTIALS
+        run: echo "GOOGLE_APPLICATION_CREDENTIALS=$GITHUB_WORKSPACE/service-account.json" >> $GITHUB_ENV
 
-    - name: Run script
-      run: python src/main.py
+      - name: Run script
+        run: python src/main.py
