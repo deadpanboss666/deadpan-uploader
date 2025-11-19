@@ -1,45 +1,49 @@
 import os
-from google_auth_oauthlib.flow import InstalledAppFlow
+import json
+from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
-TOKEN_PATH = "src/token.json"
-CLIENT_SECRET = "src/client_secret.json"
-
-
 def get_youtube_service():
-    creds = None
-    if os.path.exists(TOKEN_PATH):
-        from google.oauth2.credentials import Credentials
-        creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
-    else:
-        flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRET, SCOPES)
-        creds = flow.run_local_server(port=8080)
-        with open(TOKEN_PATH, "w") as token:
-            token.write(creds.to_json())
+    # Service account key JSON viene preso dal secret GitHub Actions
+    key_content = os.getenv("GOOGLE_SERVICE_ACCOUNT_KEY")
 
-    return build("youtube", "v3", credentials=creds)
+    if not key_content:
+        raise Exception("Environment variable GOOGLE_SERVICE_ACCOUNT_KEY is missing.")
+
+    # Carica JSON da stringa
+    info = json.loads(key_content)
+
+    # Scope richiesti per YouTube upload
+    scopes = ["https://www.googleapis.com/auth/youtube.upload"]
+
+    credentials = service_account.Credentials.from_service_account_info(info, scopes=scopes)
+
+    service = build("youtube", "v3", credentials=credentials)
+    return service
 
 
-def upload_video(file_path: str, title: str, description: str = "", tags=None, privacy="unlisted", thumbnail_path=None):
-    if tags is None:
-        tags = []
-
+def upload_video():
     youtube = get_youtube_service()
+
+    video_path = "videos_to_upload/video.mp4"
+    title = "Video caricato automaticamente"
+    description = "Upload automatico tramite GitHub Actions"
+    tags = ["automation", "github", "bot"]
 
     request_body = {
         "snippet": {
+            "categoryId": "22",
             "title": title,
             "description": description,
             "tags": tags
         },
         "status": {
-            "privacyStatus": privacy
+            "privacyStatus": "unlisted"
         }
     }
 
-    media = MediaFileUpload(file_path, chunksize=-1, resumable=True)
+    media = MediaFileUpload(video_path, chunksize=-1, resumable=True)
 
     request = youtube.videos().insert(
         part="snippet,status",
@@ -47,28 +51,7 @@ def upload_video(file_path: str, title: str, description: str = "", tags=None, p
         media_body=media
     )
 
-    print(f"\n[Monday] Inizio upload del video: {file_path}")
+    response = request.execute()
+    print("Upload completato. Video ID:", response.get("id"))
 
-    response = None
-    while response is None:
-        status, response = request.next_chunk()
-        if status:
-            print(f"Caricamento: {int(status.progress() * 100)}%")
-
-    print("\n[Monday] Upload completato!")
-    video_id = response.get("id")
-    print(f"Video ID: {video_id}")
-
-    if thumbnail_path:
-        set_thumbnail(youtube, video_id, thumbnail_path)
-
-    return video_id
-
-
-def set_thumbnail(youtube, video_id: str, thumbnail_path: str):
-    print("[Monday] Carico la thumbnail...")
-    youtube.thumbnails().set(
-        videoId=video_id,
-        media_body=MediaFileUpload(thumbnail_path)
-    ).execute()
-    print("[Monday] Thumbnail caricata!")
+    return response.get("id")
