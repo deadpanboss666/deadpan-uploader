@@ -1,68 +1,91 @@
-# -----------------------------------------
-# uploader.py — Monday
-# Gestisce l’upload su YouTube tramite API
-# -----------------------------------------
+"""
+Uploader per YouTube basato SOLO su OAuth (client_secret.json + token.json).
 
-import os
+Viene usato sia in locale che su GitHub Actions.
+- In locale, se token.json non esiste, apre il flusso OAuth nel browser.
+- Su GitHub Actions, token.json esiste già (lo ricostruiamo dai secret) e il codice
+  usa solo il refresh token, senza aprire nessun browser.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import List, Optional
+
 from googleapiclient.discovery import build
-from google.oauth2.service_account import Credentials
-from googleapiclient.http import MediaFileUpload
+from googleapiclient.errors import HttpError
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
 
-def get_youtube_service():
+# Cartella src/
+BASE_DIR = Path(__file__).resolve().parent
+
+# File OAuth (quelli che abbiamo anche in Base64 nei secrets GitHub)
+CLIENT_SECRET_FILE = BASE_DIR / "client_secret.json"
+TOKEN_FILE = BASE_DIR / "token.json"
+
+# Scope necessario per upload su YouTube
+SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+
+
+def _get_oauth_credentials() -> Credentials:
+    """Carica le credenziali OAuth da token.json, eventualmente le refresh-a.
+
+    - In locale, se token.json non esiste, avvia il flusso OAuth nel browser.
+    - Su GitHub Actions ci aspettiamo che token.json esista già.
     """
-    Carica le credenziali dal file service-account.json
-    e inizializza il client YouTube API.
-    """
-    # Percorso assoluto del file credenziali
-    credentials_path = os.path.join(os.path.dirname(__file__), "service-account.json")
+    creds: Optional[Credentials] = None
 
-    if not os.path.exists(credentials_path):
-        raise FileNotFoundError(
-            f"[Monday] ERRORE: Non trovo il file delle credenziali: {credentials_path}"
-        )
+    if TOKEN_FILE.exists():
+        # Carica il token esistente
+        creds = Credentials.from_authorized_user_file(str(TOKEN_FILE), SCOPES)
 
-    print("[Monday] Carico credenziali da service-account.json...")
+    # Se non sono valide, prova a fare refresh o avvia il flow
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            # Caso GitHub / locale dopo un po' di tempo:
+            # usa il refresh token per ottenere un nuovo access token
+            creds.refresh(Request())
+        else:
+            # SOLO uso locale (su GitHub questo non dovrebbe mai servire)
+            flow = InstalledAppFlow.from_client_secrets_file(
+                str(CLIENT_SECRET_FILE),
+                SCOPES,
+            )
+            creds = flow.run_local_server(port=0)
 
-    creds = Credentials.from_service_account_file(
-        credentials_path,
-        scopes=["https://www.googleapis.com/auth/youtube.upload"]
-    )
+        # Salva sempre il token aggiornato
+        TOKEN_FILE.write_text(creds.to_json(), encoding="utf-8")
 
-    print("[Monday] Credenziali caricate. Avvio servizio YouTube...")
+    return creds
+
+
+def _get_youtube_service():
+    """Crea il client YouTube autenticato con OAuth."""
+    creds = _get_oauth_credentials()
     return build("youtube", "v3", credentials=creds)
 
-def upload_video(video_path, title, description):
+
+def upload_video(
+    video_path: str | Path,
+    title: str,
+    description: str,
+    tags: Optional[List[str]] = None,
+    privacy_status: str = "unlisted",
+) -> str:
+    """Carica un video su YouTube e restituisce l'ID del video.
+
+    :param video_path: percorso al file video (mp4, ecc.)
+    :param title: titolo del video
+    :param description: descrizione del video
+    :param tags: lista di tag (opzionale)
+    :param privacy_status: 'public', 'unlisted' o 'private'
+    :return: ID del video caricato
     """
-    Esegue l’upload di un video su YouTube.
-    """
-    print("[Monday] Connessione al servizio YouTube...")
-    youtube = get_youtube_service()
+    video_path = str(Path(video_path))
 
-    print(f"[Monday] Upload del video: {video_path}")
+    youtube = _get_youtube_service()
 
-    # Prepara il file video per l’upload
-    media = MediaFileUpload(video_path, chunksize=-1, resumable=True)
-
-    # Richiesta di upload
-    request = youtube.videos().insert(
-        part="snippet,status",
-        body={
-            "snippet": {
-                "title": title,
-                "description": description,
-                "categoryId": "22"
-            },
-            "status": {
-                "privacyStatus": "private"
-            }
-        },
-        media_body=media
-    )
-
-    print("[Monday] Invio dati a YouTube...")
-    response = request.execute()
-
-    print("[Monday] Upload COMPLETATO!")
-    print(response)
-
-    return response
+    body = {
+        "snippet": {
