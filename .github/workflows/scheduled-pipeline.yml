@@ -1,0 +1,42 @@
+name: Scheduled Creator Automatico
+
+on:
+  schedule:
+    # 3 run al giorno (orari in UTC):
+    # 17:00, 22:00, 02:00 UTC
+    - cron: "0 17 * * *"
+    - cron: "0 22 * * *"
+    - cron: "0 2 * * *"
+  # possibilità di lanciarlo a mano da GitHub Actions
+  workflow_dispatch: {}
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Restore client_secret.json from secret
+        run: |
+          mkdir -p src
+          echo "${{ secrets.CLIENT_SECRET_JSON }}" > src/client_secret.json
+
+      - name: Restore token.json from secret
+        run: |
+          echo "${{ secrets.TOKEN_JSON }}" > src/token.json
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Run Creator Automatico pipeline
+        run: |
+          python src/main.py
