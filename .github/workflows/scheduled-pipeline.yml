@@ -1,9 +1,12 @@
 name: Scheduled Creator Automatico
 
 on:
-  # 3 volte al giorno (orari GitHub UTC) + avvio manuale
   schedule:
-    - cron: '0 7,14,21 * * *'
+    # 3 run al giorno pensati per il pubblico USA:
+    # 23:00, 02:00 e 05:00 UTC
+    # = 18:00 / 21:00 / 00:00 a New York
+    # = 15:00 / 18:00 / 21:00 a Los Angeles
+    - cron: "0 23,2,5 * * *"
   workflow_dispatch:
 
 jobs:
@@ -11,13 +14,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Set up job
+        run: echo "Starting Creator Automatico scheduled pipeline..."
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
       - name: Install dependencies
         run: |
@@ -26,15 +32,15 @@ jobs:
 
       - name: Restore client_secret.json from secret
         run: |
-          mkdir -p src
-          echo "${{ secrets.CLIENT_SECRET_JSON_B64 }}" | base64 -d > src/client_secret.json
+          echo "$CLIENT_SECRET_JSON_B64" | base64 -d > src/client_secret.json
+        env:
+          CLIENT_SECRET_JSON_B64: ${{ secrets.CLIENT_SECRET_JSON_B64 }}
 
       - name: Restore token.json from secret
         run: |
-          echo "${{ secrets.TOKEN_JSON_B64 }}" | base64 -d > src/token.json
+          echo "$TOKEN_JSON_B64" | base64 -d > src/token.json
+        env:
+          TOKEN_JSON_B64: ${{ secrets.TOKEN_JSON_B64 }}
 
       - name: Run Creator Automatico pipeline
-        env:
-          YT_UPLOAD_MODE: oauth
-        run: |
-          python -u src/main.py
+        run: python -u src/main.py
