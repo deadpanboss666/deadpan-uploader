@@ -74,18 +74,49 @@ def upload_video(
     tags: Optional[List[str]] = None,
     privacy_status: str = "unlisted",
 ) -> str:
-    """Carica un video su YouTube e restituisce l'ID del video.
-
-    :param video_path: percorso al file video (mp4, ecc.)
-    :param title: titolo del video
-    :param description: descrizione del video
-    :param tags: lista di tag (opzionale)
-    :param privacy_status: 'public', 'unlisted' o 'private'
-    :return: ID del video caricato
-    """
+    """Carica un video su YouTube e restituisce l'ID del video."""
     video_path = str(Path(video_path))
 
     youtube = _get_youtube_service()
 
     body = {
         "snippet": {
+            "title": title,
+            "description": description,
+            "tags": tags or [],
+            "categoryId": "27",  # Education
+        },
+        "status": {
+            "privacyStatus": privacy_status,
+        },
+    }
+
+    try:
+        print("Inizio upload...")
+        request = youtube.videos().insert(
+            part="snippet,status",
+            body=body,
+            media_body=video_path,
+        )
+        response = request.execute()
+        video_id = response["id"]
+        print(f"✅ Upload completato. ID video: {video_id}")
+        return video_id
+    except HttpError as e:
+        print(f"❌ Errore durante l'upload: {e}")
+        raise
+
+
+if __name__ == "__main__":
+    # Test locale manuale (non usato nel workflow GitHub)
+    dummy_path = BASE_DIR / "video.mp4"
+    if dummy_path.exists():
+        upload_video(
+            video_path=dummy_path,
+            title="Test upload YouTube (OAuth only)",
+            description="Upload di test eseguito da uploader.py",
+            tags=["test", "automation"],
+            privacy_status="unlisted",
+        )
+    else:
+        print(f"Nessun file di test trovato: {dummy_path}")
