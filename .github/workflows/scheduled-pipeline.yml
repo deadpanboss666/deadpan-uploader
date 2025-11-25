@@ -1,14 +1,10 @@
 name: Scheduled Creator Automatico
 
 on:
+  # 3 volte al giorno (orari GitHub UTC) + avvio manuale
   schedule:
-    # 3 run al giorno (orari in UTC):
-    # 17:00, 22:00, 02:00 UTC
-    - cron: "0 17 * * *"
-    - cron: "0 22 * * *"
-    - cron: "0 2 * * *"
-  # possibilità di lanciarlo a mano da GitHub Actions
-  workflow_dispatch: {}
+    - cron: '0 7,14,21 * * *'
+  workflow_dispatch:
 
 jobs:
   run-pipeline:
@@ -21,22 +17,24 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-
-      - name: Restore client_secret.json from secret
-        run: |
-          mkdir -p src
-          echo "${{ secrets.CLIENT_SECRET_JSON }}" > src/client_secret.json
-
-      - name: Restore token.json from secret
-        run: |
-          echo "${{ secrets.TOKEN_JSON }}" > src/token.json
+          python-version: '3.12'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          pip install -r requirements.txt
+
+      - name: Restore client_secret.json from secret
+        run: |
+          mkdir -p src
+          echo "${{ secrets.CLIENT_SECRET_JSON_B64 }}" | base64 -d > src/client_secret.json
+
+      - name: Restore token.json from secret
+        run: |
+          echo "${{ secrets.TOKEN_JSON_B64 }}" | base64 -d > src/token.json
 
       - name: Run Creator Automatico pipeline
+        env:
+          YT_UPLOAD_MODE: oauth
         run: |
-          python src/main.py
+          python -u src/main.py
