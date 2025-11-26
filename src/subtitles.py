@@ -62,7 +62,13 @@ def _build_srt_content(sentences: list[str], total_duration: float) -> str:
 
 
 def _get_video_duration(video_path: Path) -> float:
-    """Legge la durata del video usando ffprobe; se fallisce, usa 30s di fallback."""
+    """
+    Legge la durata del video.
+    1) prova con ffprobe
+    2) se fallisce, prova con moviepy
+    3) se fallisce ancora, usa 30s di fallback (caso limite)
+    """
+    # 1) tentativo con ffprobe
     cmd = [
         "ffprobe",
         "-v", "error",
@@ -82,8 +88,17 @@ def _get_video_duration(video_path: Path) -> float:
     try:
         return float(output)
     except ValueError:
-        # ffprobe ha dato "N/A" o qualcosa di strano: usiamo un fallback
-        print(f"[Monday] Attenzione: durata video non leggibile ('{output}'), uso 30s di fallback.")
+        print(f"[Monday] Durata non valida da ffprobe ('{output}'), provo con moviepy...")
+
+    # 2) tentativo con moviepy
+    try:
+        from moviepy.editor import VideoFileClip
+
+        with VideoFileClip(str(video_path)) as clip:
+            return float(clip.duration)
+    except Exception as e:
+        print(f"[Monday] Errore anche con moviepy: {e}")
+        print("[Monday] Uso 30s di durata di fallback.")
         return 30.0
 
 
