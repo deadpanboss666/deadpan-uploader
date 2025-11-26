@@ -25,11 +25,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-      - name: Recreate OAuth files from base64
+      - name: Recreate OAuth files from secrets
         run: |
           mkdir -p src
-          base64 -d client_secret.b64 > src/client_secret.json
-          base64 -d token.b64 > src/token.json
+          echo "$CLIENT_SECRET_JSON_B64" | base64 -d > src/client_secret.json
+          echo "$TOKEN_JSON_B64" | base64 -d > src/token.json
+        env:
+          CLIENT_SECRET_JSON_B64: ${{ secrets.CLIENT_SECRET_JSON_B64 }}
+          TOKEN_JSON_B64: ${{ secrets.TOKEN_JSON_B64 }}
 
       - name: Install Python dependencies
         run: |
