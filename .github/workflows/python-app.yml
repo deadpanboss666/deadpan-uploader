@@ -1,4 +1,4 @@
-name: Build and Run Deadpan Uploader
+name: build
 
 on:
   push:
@@ -11,24 +11,26 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.12"
+
+      - name: Install system dependencies (ffmpeg)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Recreate OAuth files from secrets
+        run: |
+          mkdir -p src
+          echo "$CLIENT_SECRET_JSON_B64" | base64 -d > src/client_secret.json
+          echo "$TOKEN_JSON_B64" | base64 -d > src/token.json
 
       - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Create GCP credentials file
-        run: |
-          echo "$CLIENT_SECRET_JSON" > service-account.json
-
-      - name: Set GOOGLE_APPLICATION_CREDENTIALS
-        run: echo "GOOGLE_APPLICATION_CREDENTIALS=$GITHUB_WORKSPACE/service-account.json" >> $GITHUB_ENV
+        run: pip install -r requirements.txt
 
       - name: Run script
         run: python src/main.py
