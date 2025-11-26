@@ -1,12 +1,10 @@
-name: Scheduled Creator Automatico
+name: Scheduled Creator Automatico - Deadpan Files
 
 on:
   schedule:
-    # 3 run al giorno pensati per il pubblico USA:
-    # 23:00, 02:00 e 05:00 UTC
-    # = 18:00 / 21:00 / 00:00 a New York
-    # = 15:00 / 18:00 / 21:00 a Los Angeles
-    - cron: "0 23,2,5 * * *"
+    # 3 run al giorno (orari in UTC)
+    # 07:00, 13:00, 19:00 UTC
+    - cron: "0 7,13,19 * * *"
   workflow_dispatch:
 
 jobs:
@@ -14,33 +12,23 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Set up job
-        run: echo "Starting Creator Automatico scheduled pipeline..."
-
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
+      - name: Install system dependencies (ffmpeg)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Restore client_secret.json from secret
-        run: |
-          echo "$CLIENT_SECRET_JSON_B64" | base64 -d > src/client_secret.json
-        env:
-          CLIENT_SECRET_JSON_B64: ${{ secrets.CLIENT_SECRET_JSON_B64 }}
-
-      - name: Restore token.json from secret
-        run: |
-          echo "$TOKEN_JSON_B64" | base64 -d > src/token.json
-        env:
-          TOKEN_JSON_B64: ${{ secrets.TOKEN_JSON_B64 }}
-
-      - name: Run Creator Automatico pipeline
-        run: python -u src/main.py
+      - name: Run Deadpan Files pipeline
+        run: python src/main.py
