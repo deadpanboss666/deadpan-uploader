@@ -29,36 +29,30 @@ def _format_timestamp(seconds: float) -> str:
     return f"{hours:02}:{minutes:02}:{secs:02},{ms:03}"
 
 
-def _build_srt_content(sentences: list[str], total_duration: float) -> str:
+def _build_srt_content(sentences: list[str], durations: list[float]) -> str:
     """
-    Crea il contenuto SRT distribuendo le frasi in modo uniforme
-    lungo tutta la durata del video.
+    Crea il contenuto SRT usando una durata specifica per ogni frase.
+    Le durate sono in secondi e vengono accumulate in sequenza.
     """
-    if not sentences or total_duration <= 0:
+    if not sentences or not durations or len(sentences) != len(durations):
         return ""
 
-    n = len(sentences)
-    segment = total_duration / n
-
     blocks: list[str] = []
-    start = 0.0
+    current_time = 0.0
 
-    for idx, sentence in enumerate(sentences, start=1):
-        end = segment * idx
-        if idx == n:
-            end = total_duration
-
-        start_ts = _format_timestamp(start)
-        end_ts = _format_timestamp(end)
+    for idx, (sentence, dur) in enumerate(zip(sentences, durations), start=1):
+        start_ts = _format_timestamp(current_time)
+        end_ts = _format_timestamp(current_time + dur)
 
         blocks.append(str(idx))
         blocks.append(f"{start_ts} --> {end_ts}")
         blocks.append(sentence)
         blocks.append("")
 
-        start = end
+        current_time += dur
 
     return "\n".join(blocks).strip() + "\n"
+
 
 
 def _get_video_duration(video_path: Path) -> float:
@@ -114,19 +108,24 @@ def add_burned_in_subtitles(video_path: str | Path, script_text: str) -> str:
 
     workdir = video_path.parent
 
-    # 1) Durata video
-    duration = _get_video_duration(video_path)
-
-    # 2) Frasi dal testo
+        # 1) Frasi dal testo
     sentences = _split_sentences(script_text)
     if not sentences:
-        # niente testo => niente modifiche
+        print("[Monday] Nessun testo per i sottotitoli, uso video originale.")
         return str(video_path)
 
+    # 2) Durata basata sul numero di parole
+    #    ~0.33s per parola, con minimo 1s e massimo 4s per frase
+    durations: list[float] = []
+    for sentence in sentences:
+        word_count = len(sentence.split())
+        estimated = word_count * 0.33  # 3 parole al secondo
+        clamped = max(1.0, min(4.0, estimated))
+        durations.append(clamped)
+
     # 3) Genera SRT
-    srt_content = _build_srt_content(sentences, duration)
-    srt_path = workdir / f"{video_path.stem}.srt"
-    srt_path.write_text(srt_content, encoding="utf-8")
+    srt_content = _build_srt_content(sentences, durations)
+
 
     # 4) ffmpeg: brucia i sottotitoli
     output_name = f"{video_path.stem}_subs.mp4"
