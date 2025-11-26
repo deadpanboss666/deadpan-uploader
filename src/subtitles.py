@@ -62,7 +62,7 @@ def _build_srt_content(sentences: list[str], total_duration: float) -> str:
 
 
 def _get_video_duration(video_path: Path) -> float:
-    """Legge la durata del video usando ffprobe (parte di ffmpeg)."""
+    """Legge la durata del video usando ffprobe; se fallisce, usa 30s di fallback."""
     cmd = [
         "ffprobe",
         "-v", "error",
@@ -77,7 +77,15 @@ def _get_video_duration(video_path: Path) -> float:
         text=True,
         check=True,
     )
-    return float(result.stdout.strip())
+    output = result.stdout.strip()
+
+    try:
+        return float(output)
+    except ValueError:
+        # ffprobe ha dato "N/A" o qualcosa di strano: usiamo un fallback
+        print(f"[Monday] Attenzione: durata video non leggibile ('{output}'), uso 30s di fallback.")
+        return 30.0
+
 
 
 def add_burned_in_subtitles(video_path: str | Path, script_text: str) -> str:
