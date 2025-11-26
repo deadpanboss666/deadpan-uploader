@@ -122,29 +122,27 @@ def upload_video(
         },
     }
 
-    try:
-    print("Inizio upload...")
-    request = youtube.videos().insert(
-        part="snippet,status",
-        body=body,
-        media_body=video_path,
-    )
-    response = request.execute()
-    video_id = response["id"]
-    print(f"✅ Upload completato. ID video: {video_id}")
-    return video_id
-except HttpError as e:
-    msg = str(e)
-    print(f"❌ Errore durante l'upload: {msg}")
+        try:
+        print("Inizio upload...")
+        request = youtube.videos().insert(
+            part="snippet,status",
+            body=body,
+            media_body=video_path,
+        )
+        response = request.execute()
+        video_id = response["id"]
+        print(f"✅ Upload completato. ID video: {video_id}")
+        return video_id
+    except HttpError as e:
+        msg = str(e)
+        print(f"❌ Errore durante l'upload: {msg}")
 
-    # Gestione specifica limite upload YouTube
-    if "uploadLimitExceeded" in msg:
-        print("[YouTube] Limite di upload raggiunto per questo account. "
-              "La pipeline è ok, ma YouTube al momento non accetta nuovi video.")
-        return ""  # non rilanciamo l'errore, il job finisce 'verde'
+        if "uploadLimitExceeded" in msg:
+            print("[YouTube] Limite di upload raggiunto per questo account. "
+                  "La pipeline è ok, ma YouTube al momento non accetta nuovi video.")
+            return ""   # non facciamo fallire il job
 
-    # Altri errori: fallisci normalmente, così li vediamo
-    raise
+        raise
 
 
 # ---------------------------------------------------------------------------
