@@ -122,7 +122,7 @@ def upload_video(
         },
     }
 
-        try:
+    try:
         print("Inizio upload...")
         request = youtube.videos().insert(
             part="snippet,status",
@@ -137,11 +137,15 @@ def upload_video(
         msg = str(e)
         print(f"❌ Errore durante l'upload: {msg}")
 
+        # Caso specifico: limite di upload giornaliero raggiunto
         if "uploadLimitExceeded" in msg:
-            print("[YouTube] Limite di upload raggiunto per questo account. "
-                  "La pipeline è ok, ma YouTube al momento non accetta nuovi video.")
-            return ""   # non facciamo fallire il job
+            print(
+                "[YouTube] Limite di upload raggiunto per questo account. "
+                "La pipeline è ok, ma YouTube al momento non accetta nuovi video."
+            )
+            return ""  # non facciamo fallire il job
 
+        # Altri errori: li rilanciamo
         raise
 
 
