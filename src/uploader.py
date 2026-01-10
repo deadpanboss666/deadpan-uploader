@@ -11,10 +11,12 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import List, Optional
+
 from subtitles import generate_subtitles_txt_from_text
 
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from googleapiclient.http import MediaFileUpload
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -74,6 +76,30 @@ def _get_youtube_service():
 
 
 # ---------------------------------------------------------------------------
+# CHECK FILE VIDEO PRIMA DELL'UPLOAD
+# ---------------------------------------------------------------------------
+
+
+def _check_video_file(video_path: str | Path) -> bool:
+    """Controlla che il file video esista e non sia vuoto/corrotto."""
+    p = Path(video_path)
+
+    if not p.exists():
+        print(f"[Monday] ERRORE: file video non trovato: {p}")
+        return False
+
+    size = p.stat().st_size
+    print(f"[Monday] Video per upload: {p} (dimensione: {size} byte)")
+
+    # Soglia minima: 1 KB. Se è meno, è quasi sicuramente corrotto.
+    if size < 1024:
+        print("[Monday] ERRORE: file video troppo piccolo / probabilmente corrotto.")
+        return False
+
+    return True
+
+
+# ---------------------------------------------------------------------------
 # UPLOAD VIDEO
 # ---------------------------------------------------------------------------
 
@@ -91,7 +117,11 @@ def upload_video(
         upload_video(video_path=final_video, title=seo.title,
                      description=seo.description, tags=seo.tags)
     """
-    video_path = str(Path(video_path))
+    video_path = Path(video_path)
+
+    # Controllo file prima di tentarne l'upload
+    if not _check_video_file(video_path):
+        raise RuntimeError("[Monday] Upload annullato: file video non valido.")
 
     youtube = _get_youtube_service()
 
@@ -123,12 +153,18 @@ def upload_video(
         },
     }
 
+    media = MediaFileUpload(
+        str(video_path),
+        chunksize=-1,
+        resumable=False,
+    )
+
     try:
         print("Inizio upload...")
         request = youtube.videos().insert(
             part="snippet,status",
             body=body,
-            media_body=video_path,
+            media_body=media,
         )
         response = request.execute()
         video_id = response["id"]
@@ -212,26 +248,29 @@ def synth_voice(text, output_path):
     - text: testo completo dello short
     - output_path: percorso del file WAV finale (48 kHz, mono)
     """
-    from pathlib import Path
+    from pathlib import Path as _Path
     from gtts import gTTS
-    import subprocess
+    import subprocess as _subprocess
 
     text = (text or "").strip()
     if not text:
         raise ValueError("Testo vuoto passato a synth_voice")
 
-    output_path = Path(output_path)
+    output_path = _Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # 1) Crea un MP3 temporaneo con gTTS
     tmp_mp3 = output_path.with_suffix(".mp3")
 
-        # Monday: genera automaticamente il file dei sottotitoli
+    # Monday: genera automaticamente il file dei sottotitoli
+    subtitles_txt_path = _Path("videos_to_upload") / "subtitles.txt"
     generate_subtitles_txt_from_text(
         raw_text=text,
-        subtitles_txt_path="videos_to_upload/subtitles.txt",
+        subtitles_txt_path=subtitles_txt_path,
     )
 
+    # Sintesi vocale
+    tts = gTTS(text=text, lang="en", slow=False)
     tts.save(str(tmp_mp3))
 
     # 2) Converte l'MP3 in WAV 48 kHz mono con ffmpeg
@@ -244,7 +283,7 @@ def synth_voice(text, output_path):
         str(output_path),
     ]
     print("Eseguo ffmpeg per convertire l'audio TTS...")
-    subprocess.run(cmd, check=True)
+    _subprocess.run(cmd, check=True)
 
     # 3) Rimuovi l'MP3 temporaneo
     try:
@@ -256,6 +295,7 @@ def synth_voice(text, output_path):
 # ---------------------------------------------------------------------------
 # TEST MANUALE (opzionale)
 # ---------------------------------------------------------------------------
+
 
 if __name__ == "__main__":
     dummy_path = BASE_DIR / "video.mp4"
