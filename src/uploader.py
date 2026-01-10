@@ -193,8 +193,12 @@ def upload_video(
 
 def generate_script():
     """
-    Genera una micro-storia in stile horror / true crime per Deadpan Files.
-    Ritorna (script, topic) per lo Short.
+    Genera una micro-storia in stile horror / true crime per Deadpan Files
+    e restituisce:
+      - script completo (per voce + sottotitoli)
+      - title (ottimizzato per CTR)
+      - description (2–3 righe con hook)
+      - tags (lista di keyword)
     """
     import random
 
@@ -226,6 +230,7 @@ def generate_script():
     mid = random.choice(mid_parts)
     twist = random.choice(twists)
 
+    # Testo che usiamo per voce + sottotitoli
     script = (
         f"{opening} "
         f"{mid} "
@@ -233,8 +238,33 @@ def generate_script():
         "If you want more cases like this, follow Deadpan Files and check the next file in the stack."
     )
 
-    topic = "Deadpan Files case story"
-    return script, topic
+    # Titoli pensati per colpire al volo nello scroll
+    possible_titles = [
+        "The Case File They Tried To Bury",
+        "The Disappearance That Never Made Sense",
+        "The Security Footage No One Was Meant To See",
+        "The Phone Call From A Dead Number",
+        "The Recording That Closed The Station Early",
+    ]
+    title = random.choice(possible_titles)
+
+    # Descrizione: prima riga = hook, poi contesto e CTA
+    description = (
+        f"{opening} {mid} {twist}\n\n"
+        "Short true crime / horror-style case from Deadpan Files. "
+        "Subscribe for more strange case files, found footage and unexplained stories."
+    )
+
+    tags = [
+        "deadpan files",
+        "true crime",
+        "horror story",
+        "creepy cases",
+        "mystery",
+        "shorts",
+    ]
+
+    return script, title, description, tags
 
 
 # ---------------------------------------------------------------------------

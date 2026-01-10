@@ -76,9 +76,11 @@ def _render_video(script_text: str) -> Path:
 def main() -> None:
     print("[Monday] Avvio upload automatico...")
 
-    # 1) Script Deadpan Files
-    script_text, topic = generate_script()
+        # 1) Script Deadpan Files + metadati YouTube
+    script_text, title, description, tags = generate_script()
     print("[Monday] Script generato (preview):", script_text[:120], "...")
+    print("[Monday] Titolo scelto:", title)
+
 
     # 2) Audio + 3) video base (immagine + voce)
     raw_video = _render_video(script_text)
@@ -94,11 +96,13 @@ def main() -> None:
 
     # 5) Upload su YouTube
     print("[Monday] Preparazione upload...")
-    upload_video(
+        upload_video(
         video_path=final_video_path,
-        title=topic,
-        description=script_text,
+        title=title,
+        description=description,
+        tags=tags,
     )
+
 
 
 if __name__ == "__main__":
