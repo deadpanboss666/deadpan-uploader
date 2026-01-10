@@ -11,6 +11,7 @@ def _split_sentences(text: str) -> list[str]:
     if not clean:
         return []
 
+    # Spezza su . ! ? seguiti da spazio
     parts = re.split(r"(?<=[.!?])\s+", clean)
     sentences = [p.strip() for p in parts if p.strip()]
 
@@ -57,8 +58,11 @@ def _build_srt_content(sentences: list[str], durations: list[float]) -> str:
 def add_burned_in_subtitles(video_path: str | Path, script_text: str) -> str:
     """
     Crea i sottotitoli dal testo e li brucia nel video con ffmpeg.
-    - Durata di ogni frase stimata in base al numero di parole (~0.33s per parola).
-    - Se ffmpeg fallisce, ritorna il video originale.
+
+    - Il testo viene spezzato in frasi.
+    - Ogni frase ha una durata stimata in base al numero di parole (~0.33s per parola),
+      con minimo 1s e massimo 4s.
+    - Se ffmpeg fallisce, ritorna il video originale SENZA sottotitoli.
     """
     video_path = Path(video_path).resolve()
     if not video_path.exists():
