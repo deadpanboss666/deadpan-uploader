@@ -49,39 +49,89 @@ def _format_ts(seconds: float) -> str:
 def _build_srt_from_lines(
     lines: list[str],
     video_duration: float,
-    max_chars_per_line: int = 40,
+    max_chars_per_line: int = 32,
 ) -> str:
-    """Costruisce il contenuto SRT a partire dalle righe di testo."""
-    # Pulizia righe
-    chunks: list[str] = []
+    """Costruisce il contenuto SRT a partire dal testo.
+
+    Migliorie:
+    - spezza il testo in frasi (., ?, !)
+    - crea blocchi brevi (max ~2 righe)
+    - assegna la durata in base al numero di parole (più parole -> più tempo)
+    """
+
+    # 1) Costruiamo una lista di frasi pulite
+    sentence_chunks: list[str] = []
+
     for raw in lines:
         raw = raw.strip()
         if not raw:
             continue
-        # spezza le frasi troppo lunghe in 2 righe massimo (per leggibilità)
-        wrapped = wrap(raw, max_chars_per_line)
-        if not wrapped:
+
+        # spezza in frasi usando la punteggiatura come separatore
+        parts = re.split(r"(?<=[.!?])\s+", raw)
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            sentence_chunks.append(part)
+
+    if not sentence_chunks:
+        return ""
+
+    # 2) Converte le frasi in blocchi max 2 righe da max_chars_per_line
+    chunks: list[str] = []
+    word_counts: list[int] = []
+
+    for sent in sentence_chunks:
+        wrapped_lines = wrap(sent, max_chars_per_line)
+        if not wrapped_lines:
             continue
-        # Limita a 2 righe max per sottotitolo
-        chunks.append("\n".join(wrapped[:2]))
+
+        # usiamo al massimo 2 righe per sottotitolo
+        block_lines = wrapped_lines[:2]
+        block_text = "\n".join(block_lines)
+        chunks.append(block_text)
+
+        # conteggio parole (per la durata relativa)
+        words = len(sent.split())
+        word_counts.append(max(words, 1))
 
     if not chunks:
         return ""
 
-    n = len(chunks)
-    slot = video_duration / n
-    srt_lines: list[str] = []
+    total_words = sum(word_counts)
+    if total_words <= 0:
+        total_words = len(chunks)
 
-    for idx, text in enumerate(chunks, start=1):
-        start_t = slot * (idx - 1)
-        end_t = slot * idx - 0.2  # piccolo margine per non sovrapporre
-        if end_t <= start_t:
-            end_t = start_t + 0.5
+    # lasciamo un piccolo margine di coda per evitare testo incollato alla fine
+    usable_duration = max(1.0, video_duration * 0.96)
+
+    # 3) Costruiamo le entry SRT assegnando il tempo in base alle parole
+    srt_lines: list[str] = []
+    current_start = 0.0
+
+    for idx, (text, words) in enumerate(zip(chunks, word_counts), start=1):
+        share = words / total_words
+        # durata proporzionale alle parole, minimo 1.2s
+        block_duration = max(1.2, usable_duration * share)
+
+        start_t = current_start
+        end_t = start_t + block_duration
+
+        # non superiamo la durata totale
+        if end_t > video_duration:
+            end_t = video_duration
+
+        # safety: se per qualche motivo siamo oltre la fine, usciamo
+        if start_t >= video_duration:
+            break
 
         srt_lines.append(str(idx))
         srt_lines.append(f"{_format_ts(start_t)} --> {_format_ts(end_t)}")
         srt_lines.append(text)
-        srt_lines.append("")  # riga vuota separatrice
+        srt_lines.append("")  # riga vuota
+
+        current_start = end_t
 
     return "\n".join(srt_lines).strip() + "\n"
 
@@ -128,7 +178,21 @@ def add_burned_in_subtitles(
     srt_path = output_dir / "subtitles.srt"
     srt_path.write_text(srt_content, encoding="utf-8")
 
-    output_video = output_dir / "video_with_subs.mp4"
+        output_video = output_dir / "video_with_subs.mp4"
+
+    # Stile sottotitoli:
+    # - Fontsize 32
+    # - Outline e shadow per leggibilità
+    # - MarginV per tenerli un po' più alti (utile su mobile)
+    subtitle_filter = (
+        f"subtitles={srt_path.name}"
+        ":force_style='Fontsize=32,"
+        "Outline=2,Shadow=1,"
+        "PrimaryColour=&H00FFFFFF&,"
+        "OutlineColour=&H00000000&,"
+        "MarginV=80,"
+        "Alignment=2'"
+    )
 
     cmd = [
         "ffmpeg",
@@ -136,11 +200,12 @@ def add_burned_in_subtitles(
         "-i",
         str(video_path),
         "-vf",
-        f"subtitles={srt_path.name}",
+        subtitle_filter,
         "-c:a",
         "copy",
         str(output_video),
     ]
+
 
     print("[Monday] Lancio ffmpeg per burn-in sottotitoli...")
     print("[Monday] Comando:", " ".join(cmd))
