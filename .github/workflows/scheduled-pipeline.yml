@@ -12,6 +12,10 @@ jobs:
   run-pipeline:
     runs-on: ubuntu-latest
 
+    env:
+      CLIENT_SECRET_JSON: ${{ secrets.CLIENT_SECRET_JSON }}
+      TOKEN_JSON: ${{ secrets.TOKEN_JSON }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -29,8 +33,8 @@ jobs:
       - name: Recreate OAuth files from secrets
         run: |
           mkdir -p src
-          echo "$CLIENT_SECRET_JSON_B64" | base64 -d > src/client_secret.json
-          echo "$TOKEN_JSON_B64" | base64 -d > src/token.json
+          printf '%s' "$CLIENT_SECRET_JSON" > src/client_secret.json
+          printf '%s' "$TOKEN_JSON" > src/token.json
 
       - name: Install dependencies
         run: pip install -r requirements.txt
