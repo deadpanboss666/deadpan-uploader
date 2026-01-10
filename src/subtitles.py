@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-import math
+import re
 import subprocess
 from pathlib import Path
 from textwrap import wrap
@@ -46,7 +46,11 @@ def _format_ts(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
-def _build_srt_from_lines(lines: list[str], video_duration: float, max_chars_per_line: int = 40) -> str:
+def _build_srt_from_lines(
+    lines: list[str],
+    video_duration: float,
+    max_chars_per_line: int = 40,
+) -> str:
     """Costruisce il contenuto SRT a partire dalle righe di testo."""
     # Pulizia righe
     chunks: list[str] = []
@@ -150,3 +154,37 @@ def add_burned_in_subtitles(
         print(f"[Monday] Dettagli: {e}")
         print("[Monday] Uso il video originale SENZA sottotitoli.")
         return str(video_path)
+
+
+def generate_subtitles_txt_from_text(
+    raw_text: str,
+    subtitles_txt_path: str | Path,
+    max_chars_per_line: int = 60,
+) -> None:
+    """Genera automaticamente un file subtitles.txt a partire dal testo completo
+    usato per la voce (gTTS).
+    Una riga del file = un “blocco” di sottotitoli.
+    """
+    subtitles_txt_path = Path(subtitles_txt_path)
+    subtitles_txt_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Spezza il testo in frasi usando punteggiatura come delimitatore
+    rough_sentences = re.split(r"[.!?]+", raw_text)
+    lines: list[str] = []
+
+    for sent in rough_sentences:
+        sent = sent.strip()
+        if not sent:
+            continue
+        # Se la frase è lunghissima, la spezzo in 2 pezzi max
+        wrapped = wrap(sent, max_chars_per_line)
+        if not wrapped:
+            continue
+        lines.append(" ".join(wrapped[:2]))
+
+    if not lines:
+        print("[Monday] Nessuna frase trovata per i sottotitoli (generate_subtitles_txt_from_text).")
+        return
+
+    subtitles_txt_path.write_text("\n".join(lines), encoding="utf-8")
+    print(f"[Monday] File sottotitoli generato automaticamente: {subtitles_txt_path}")

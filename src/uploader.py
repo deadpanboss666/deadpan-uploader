@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import List, Optional
+from subtitles import generate_subtitles_txt_from_text
 
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -225,7 +226,12 @@ def synth_voice(text, output_path):
     # 1) Crea un MP3 temporaneo con gTTS
     tmp_mp3 = output_path.with_suffix(".mp3")
 
-    tts = gTTS(text=text, lang="en", slow=False)
+        # Monday: genera automaticamente il file dei sottotitoli
+    generate_subtitles_txt_from_text(
+        raw_text=text,
+        subtitles_txt_path="videos_to_upload/subtitles.txt",
+    )
+
     tts.save(str(tmp_mp3))
 
     # 2) Converte l'MP3 in WAV 48 kHz mono con ffmpeg
