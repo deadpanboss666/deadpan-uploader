@@ -1,119 +1,152 @@
+# subtitles.py — Monday
+# Generazione SRT e burn-in sottotitoli con ffmpeg
+
 from __future__ import annotations
 
-import re
+import math
 import subprocess
 from pathlib import Path
+from textwrap import wrap
 
 
-def _split_sentences(text: str) -> list[str]:
-    """Spezza il testo in frasi usando la punteggiatura."""
-    clean = re.sub(r"\s+", " ", text).strip()
-    if not clean:
-        return []
-
-    # Spezza su . ! ? seguiti da spazio
-    parts = re.split(r"(?<=[.!?])\s+", clean)
-    sentences = [p.strip() for p in parts if p.strip()]
-
-    if not sentences:
-        sentences = [clean]
-
-    return sentences
-
-
-def _format_timestamp(seconds: float) -> str:
-    """Converte secondi float in formato SRT hh:mm:ss,mmm."""
-    total_ms = int(round(seconds * 1000))
-    hours, rem = divmod(total_ms, 3600_000)
-    minutes, rem = divmod(rem, 60_000)
-    secs, ms = divmod(rem, 1000)
-    return f"{hours:02}:{minutes:02}:{secs:02},{ms:03}"
-
-
-def _build_srt_content(sentences: list[str], durations: list[float]) -> str:
+def _run_ffprobe_duration(video_path: Path) -> float:
+    """Usa ffprobe per recuperare la durata del video in secondi.
+    Se fallisce, usa un fallback di 30s per non bloccare la pipeline.
     """
-    Crea il contenuto SRT usando una durata specifica per ogni frase.
-    Le durate sono in secondi e vengono accumulate in sequenza.
-    """
-    if not sentences or not durations or len(sentences) != len(durations):
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=nokey=1:noprint_wrappers=1",
+        str(video_path),
+    ]
+    try:
+        result = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
+        duration_str = result.decode().strip()
+        duration = float(duration_str)
+        print(f"[Monday] Durata video rilevata: {duration:.2f}s")
+        return duration
+    except Exception as e:  # noqa: BLE001
+        print(f"[Monday] Attenzione: impossibile leggere la durata video con ffprobe: {e}")
+        print("[Monday] Uso durata di fallback: 30s.")
+        return 30.0
+
+
+def _format_ts(seconds: float) -> str:
+    """Converte i secondi in formato SRT (HH:MM:SS,mmm)."""
+    if seconds < 0:
+        seconds = 0.0
+    ms = int(round((seconds - int(seconds)) * 1000))
+    s = int(seconds) % 60
+    m = (int(seconds) // 60) % 60
+    h = int(seconds) // 3600
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def _build_srt_from_lines(lines: list[str], video_duration: float, max_chars_per_line: int = 40) -> str:
+    """Costruisce il contenuto SRT a partire dalle righe di testo."""
+    # Pulizia righe
+    chunks: list[str] = []
+    for raw in lines:
+        raw = raw.strip()
+        if not raw:
+            continue
+        # spezza le frasi troppo lunghe in 2 righe massimo (per leggibilità)
+        wrapped = wrap(raw, max_chars_per_line)
+        if not wrapped:
+            continue
+        # Limita a 2 righe max per sottotitolo
+        chunks.append("\n".join(wrapped[:2]))
+
+    if not chunks:
         return ""
 
-    blocks: list[str] = []
-    current_time = 0.0
+    n = len(chunks)
+    slot = video_duration / n
+    srt_lines: list[str] = []
 
-    for idx, (sentence, dur) in enumerate(zip(sentences, durations), start=1):
-        start_ts = _format_timestamp(current_time)
-        end_ts = _format_timestamp(current_time + dur)
+    for idx, text in enumerate(chunks, start=1):
+        start_t = slot * (idx - 1)
+        end_t = slot * idx - 0.2  # piccolo margine per non sovrapporre
+        if end_t <= start_t:
+            end_t = start_t + 0.5
 
-        blocks.append(str(idx))
-        blocks.append(f"{start_ts} --> {end_ts}")
-        blocks.append(sentence)
-        blocks.append("")
+        srt_lines.append(str(idx))
+        srt_lines.append(f"{_format_ts(start_t)} --> {_format_ts(end_t)}")
+        srt_lines.append(text)
+        srt_lines.append("")  # riga vuota separatrice
 
-        current_time += dur
-
-    return "\n".join(blocks).strip() + "\n"
+    return "\n".join(srt_lines).strip() + "\n"
 
 
-def add_burned_in_subtitles(video_path: str | Path, script_text: str) -> str:
+def add_burned_in_subtitles(
+    video_path: str | Path,
+    subtitles_txt_path: str | Path,
+    output_dir: str | Path | None = None,
+) -> str:
+    """Crea un nuovo video con sottotitoli bruciati.
+    Se qualcosa va storto, restituisce il path del video originale.
     """
-    Crea i sottotitoli dal testo e li brucia nel video con ffmpeg.
+    video_path = Path(video_path)
+    subtitles_txt_path = Path(subtitles_txt_path)
 
-    - Il testo viene spezzato in frasi.
-    - Ogni frase ha una durata stimata in base al numero di parole (~0.33s per parola),
-      con minimo 1s e massimo 4s.
-    - Se ffmpeg fallisce, ritorna il video originale SENZA sottotitoli.
-    """
-    video_path = Path(video_path).resolve()
-    if not video_path.exists():
-        raise FileNotFoundError(f"Video non trovato: {video_path}")
+    if output_dir is None:
+        output_dir = video_path.parent.parent / "build"  # es: deadpan-uploader/build
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    workdir = video_path.parent
-
-    # 1) Frasi dal testo
-    sentences = _split_sentences(script_text)
-    if not sentences:
-        print("[Monday] Nessun testo per i sottotitoli, uso video originale.")
+    # Se non c'è il file di testo, usa direttamente il video originale.
+    if not subtitles_txt_path.exists():
+        print(f"[Monday] Nessun file di sottotitoli trovato ({subtitles_txt_path}). Uso video originale.")
         return str(video_path)
 
-    # 2) Durata per frase basata sul numero di parole
-    #    ~0.33s per parola, con minimo 1s e massimo 4s per frase
-    durations: list[float] = []
-    for sentence in sentences:
-        word_count = len(sentence.split())
-        estimated = word_count * 0.33  # circa 3 parole al secondo
-        clamped = max(1.0, min(4.0, estimated))
-        durations.append(clamped)
+    try:
+        raw_lines = subtitles_txt_path.read_text(encoding="utf-8").splitlines()
+    except UnicodeDecodeError:
+        raw_lines = subtitles_txt_path.read_text(encoding="latin-1").splitlines()
 
-    # 3) Genera SRT
-    srt_content = _build_srt_content(sentences, durations)
-    srt_path = workdir / f"{video_path.stem}.srt"
+    if not any(line.strip() for line in raw_lines):
+        print("[Monday] File sottotitoli vuoto. Uso video originale.")
+        return str(video_path)
+
+    # Calcola durata video
+    duration = _run_ffprobe_duration(video_path)
+
+    # Costruisci contenuto SRT
+    srt_content = _build_srt_from_lines(raw_lines, duration)
+    if not srt_content.strip():
+        print("[Monday] Impossibile costruire SRT dai sottotitoli. Uso video originale.")
+        return str(video_path)
+
+    srt_path = output_dir / "subtitles.srt"
     srt_path.write_text(srt_content, encoding="utf-8")
 
-    # 4) ffmpeg: brucia i sottotitoli
-    output_name = f"{video_path.stem}_subs.mp4"
-    output_path = workdir / output_name
+    output_video = output_dir / "video_with_subs.mp4"
 
     cmd = [
         "ffmpeg",
         "-y",
         "-i",
-        video_path.name,
+        str(video_path),
         "-vf",
         f"subtitles={srt_path.name}",
         "-c:a",
         "copy",
-        output_name,
+        str(output_video),
     ]
 
+    print("[Monday] Lancio ffmpeg per burn-in sottotitoli...")
+    print("[Monday] Comando:", " ".join(cmd))
+
     try:
-        subprocess.run(cmd, check=True, cwd=workdir)
-    except FileNotFoundError as e:
-        print(f"[Monday] ffmpeg non trovato: {e}. Uso video originale senza sottotitoli.")
-        return str(video_path)
-    except subprocess.CalledProcessError as e:
-        print(f"[Monday] Errore ffmpeg durante la creazione del video con sottotitoli: {e}")
+        subprocess.run(cmd, check=True, cwd=str(output_dir))
+        print(f"[Monday] Video con sottotitoli generato: {output_video}")
+        return str(output_video)
+    except subprocess.CalledProcessError as e:  # noqa: BLE001
+        print("[Monday] Errore ffmpeg durante la creazione del video con sottotitoli.")
+        print(f"[Monday] Dettagli: {e}")
         print("[Monday] Uso il video originale SENZA sottotitoli.")
         return str(video_path)
-
-    return str(output_path)
