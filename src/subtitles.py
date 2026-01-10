@@ -148,7 +148,8 @@ def add_burned_in_subtitles(
     subtitles_txt_path = Path(subtitles_txt_path)
 
     if output_dir is None:
-        output_dir = video_path.parent.parent / "build"  # es: deadpan-uploader/build
+        # es: deadpan-uploader/build
+        output_dir = video_path.parent.parent / "build"
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -178,7 +179,7 @@ def add_burned_in_subtitles(
     srt_path = output_dir / "subtitles.srt"
     srt_path.write_text(srt_content, encoding="utf-8")
 
-        output_video = output_dir / "video_with_subs.mp4"
+    output_video = output_dir / "video_with_subs.mp4"
 
     # Stile sottotitoli:
     # - Fontsize 32
@@ -206,7 +207,6 @@ def add_burned_in_subtitles(
         str(output_video),
     ]
 
-
     print("[Monday] Lancio ffmpeg per burn-in sottotitoli...")
     print("[Monday] Comando:", " ".join(cmd))
 
@@ -214,11 +214,12 @@ def add_burned_in_subtitles(
         subprocess.run(cmd, check=True, cwd=str(output_dir))
         print(f"[Monday] Video con sottotitoli generato: {output_video}")
         return str(output_video)
-    except subprocess.CalledProcessError as e:  # noqa: BLE001
+    except subprocess.CalledProcessError as e:
         print("[Monday] Errore ffmpeg durante la creazione del video con sottotitoli.")
         print(f"[Monday] Dettagli: {e}")
         print("[Monday] Uso il video originale SENZA sottotitoli.")
         return str(video_path)
+
 
 
 def generate_subtitles_txt_from_text(
