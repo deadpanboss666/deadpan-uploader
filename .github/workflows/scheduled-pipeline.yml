@@ -6,7 +6,8 @@ on:
       - main
   schedule:
     # Esecuzione automatica a orari fissi (puoi cambiare i tempi quando vuoi)
-    - cron: "0 15,19,23 * * *"
+    # Esempio: 0 15,19,23 * * *  -> alle 15, 19 e 23 ogni giorno
+    # - cron: "0 15,19,23 * * *"
 
 jobs:
   run-pipeline:
@@ -37,7 +38,9 @@ jobs:
           printf '%s' "$TOKEN_JSON" > src/token.json
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
       - name: Run script
         run: python src/main.py
