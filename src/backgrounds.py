@@ -1,4 +1,4 @@
-# backgrounds.py — Monday
+# backgrounds.py — Monday (safe version)
 # Generazione automatica di sfondi video procedurali (nessuna immagine fissa)
 
 from __future__ import annotations
@@ -52,9 +52,9 @@ def generate_procedural_background(
 ) -> Path:
     """Genera un video di sfondo procedurale (noise / grain noir).
 
-    - Nessuna immagine di input
-    - Pattern rumoroso in movimento + vignette
-    - Parametri randomizzati ad ogni chiamata per variare lo stile
+    Versione compatibile con ffmpeg su GitHub Actions:
+    - sorgente: color nero
+    - filtro: noise animato + eq (contrasto) desaturato
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -64,19 +64,18 @@ def generate_procedural_background(
 
     # Parametri random per variare il look
     seed = random.randint(0, 999_999)
-    grain_strength = random.choice([10, 20, 30])
-    contrast = round(random.uniform(1.1, 1.6), 2)
-    brightness = round(random.uniform(-0.10, 0.05), 2)
+    grain_strength = random.choice([15, 20, 25])
+    contrast = round(random.uniform(1.15, 1.55), 2)
+    brightness = round(random.uniform(-0.08, 0.03), 2)
 
-    # Catena di filtri ffmpeg:
+    # Catena di filtri ffmpeg semplificata:
     # - noise: grana in movimento con seed random
+    # - format: yuv420p per compatibilità
     # - eq: contrasto + leggera variazione di luminosità, desaturato
-    # - vignette: bordi più scuri per mood "Deadpan"
     filter_chain = (
-        f"noise=alls={grain_strength}:allf=t+u:seed={seed},"
+        f"noise=alls={grain_strength}:allf=t:seed={seed},"
         "format=yuv420p,"
-        f"eq=contrast={contrast}:brightness={brightness}:saturation=0.0,"
-        "vignette=PI/4:0.7"
+        f"eq=contrast={contrast}:brightness={brightness}:saturation=0.0"
     )
 
     cmd = [
@@ -85,7 +84,7 @@ def generate_procedural_background(
         "-f",
         "lavfi",
         "-i",
-        f"color=c=black:size={resolution}:rate={fps}",
+        f"color=c=black:s={resolution}:r={fps}",
         "-vf",
         filter_chain,
         "-t",
