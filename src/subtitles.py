@@ -1,18 +1,16 @@
 # subtitles.py — Monday
-# Generazione SRT e burn-in sottotitoli con ffmpeg
+# Generazione SRT e burn-in sottotitoli con ffmpeg, stile più leggibile
 
 from __future__ import annotations
 
-import re
+import math
 import subprocess
 from pathlib import Path
 from textwrap import wrap
 
 
 def _run_ffprobe_duration(video_path: Path) -> float:
-    """Usa ffprobe per recuperare la durata del video in secondi.
-    Se fallisce, usa un fallback di 30s per non bloccare la pipeline.
-    """
+    """Usa ffprobe per recuperare la durata del video in secondi."""
     cmd = [
         "ffprobe",
         "-v",
@@ -27,11 +25,11 @@ def _run_ffprobe_duration(video_path: Path) -> float:
         result = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
         duration_str = result.decode().strip()
         duration = float(duration_str)
-        print(f"[Monday] Durata video rilevata: {duration:.2f}s")
+        print(f"[Monday/subtitles] Durata video rilevata: {duration:.2f}s")
         return duration
     except Exception as e:  # noqa: BLE001
-        print(f"[Monday] Attenzione: impossibile leggere la durata video con ffprobe: {e}")
-        print("[Monday] Uso durata di fallback: 30s.")
+        print(f"[Monday/subtitles] Attenzione: impossibile leggere durata video con ffprobe: {e}")
+        print("[Monday/subtitles] Uso durata di fallback: 30s.")
         return 30.0
 
 
@@ -51,89 +49,79 @@ def _build_srt_from_lines(
     video_duration: float,
     max_chars_per_line: int = 32,
 ) -> str:
-    """Costruisce il contenuto SRT a partire dal testo.
+    """Costruisce il contenuto SRT a partire dalle righe di testo.
 
-    Migliorie:
-    - spezza il testo in frasi (., ?, !)
-    - crea blocchi brevi (max ~2 righe)
-    - assegna la durata in base al numero di parole (più parole -> più tempo)
+    - spezza il testo in "blocchi" massimo 2 righe
+    - cerca di distribuire il tempo in modo uniforme
     """
-
-    # 1) Costruiamo una lista di frasi pulite
-    sentence_chunks: list[str] = []
+    chunks: list[str] = []
 
     for raw in lines:
         raw = raw.strip()
         if not raw:
             continue
-
-        # spezza in frasi usando la punteggiatura come separatore
-        parts = re.split(r"(?<=[.!?])\s+", raw)
-        for part in parts:
-            part = part.strip()
-            if not part:
-                continue
-            sentence_chunks.append(part)
-
-    if not sentence_chunks:
-        return ""
-
-    # 2) Converte le frasi in blocchi max 2 righe da max_chars_per_line
-    chunks: list[str] = []
-    word_counts: list[int] = []
-
-    for sent in sentence_chunks:
-        wrapped_lines = wrap(sent, max_chars_per_line)
-        if not wrapped_lines:
+        wrapped = wrap(raw, max_chars_per_line)
+        if not wrapped:
             continue
-
-        # usiamo al massimo 2 righe per sottotitolo
-        block_lines = wrapped_lines[:2]
-        block_text = "\n".join(block_lines)
-        chunks.append(block_text)
-
-        # conteggio parole (per la durata relativa)
-        words = len(sent.split())
-        word_counts.append(max(words, 1))
+        chunks.append("\n".join(wrapped[:2]))  # max 2 righe
 
     if not chunks:
         return ""
 
-    total_words = sum(word_counts)
-    if total_words <= 0:
-        total_words = len(chunks)
+    n = len(chunks)
+    # tempo medio per blocco, ma con minimo 1.2s per non essere troppo veloci
+    slot = max(video_duration / n, 1.2)
 
-    # lasciamo un piccolo margine di coda per evitare testo incollato alla fine
-    usable_duration = max(1.0, video_duration * 0.96)
-
-    # 3) Costruiamo le entry SRT assegnando il tempo in base alle parole
     srt_lines: list[str] = []
-    current_start = 0.0
+    start_t = 0.5  # piccolo offset iniziale
 
-    for idx, (text, words) in enumerate(zip(chunks, word_counts), start=1):
-        share = words / total_words
-        # durata proporzionale alle parole, minimo 1.2s
-        block_duration = max(1.2, usable_duration * share)
-
-        start_t = current_start
-        end_t = start_t + block_duration
-
-        # non superiamo la durata totale
-        if end_t > video_duration:
-            end_t = video_duration
-
-        # safety: se per qualche motivo siamo oltre la fine, usciamo
-        if start_t >= video_duration:
-            break
+    for idx, text in enumerate(chunks, start=1):
+        end_t = start_t + slot - 0.3
+        if end_t <= start_t:
+            end_t = start_t + 0.7
 
         srt_lines.append(str(idx))
         srt_lines.append(f"{_format_ts(start_t)} --> {_format_ts(end_t)}")
         srt_lines.append(text)
-        srt_lines.append("")  # riga vuota
+        srt_lines.append("")
 
-        current_start = end_t
+        start_t = end_t + 0.1
 
     return "\n".join(srt_lines).strip() + "\n"
+
+
+def generate_subtitles_txt_from_text(
+    raw_text: str,
+    subtitles_txt_path: str | Path,
+) -> Path:
+    """
+    Converte lo script intero (una stringa lunga) in un file subtitles.txt
+    dove ogni riga è una "frase" (= blocco SRT).
+    """
+    subtitles_txt_path = Path(subtitles_txt_path)
+    subtitles_txt_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Spezzatura grossolana: punti, punti esclamativi, interrogativi
+    temp = raw_text.replace("?", "?.").replace("!", "!.")
+    sentences = [s.strip() for s in temp.split(".") if s.strip()]
+
+    # Se è troppo poco, spezza anche per virgole lunghe
+    if len(sentences) < 4:
+        extra: list[str] = []
+        for s in sentences:
+            parts = [p.strip() for p in s.split(",") if p.strip()]
+            if len(parts) <= 1:
+                extra.append(s)
+            else:
+                extra.extend(parts)
+        sentences = extra
+
+    with subtitles_txt_path.open("w", encoding="utf-8") as f:
+        for s in sentences:
+            f.write(s + "\n")
+
+    print(f"[Monday/subtitles] File subtitles.txt generato: {subtitles_txt_path}")
+    return subtitles_txt_path
 
 
 def add_burned_in_subtitles(
@@ -148,14 +136,12 @@ def add_burned_in_subtitles(
     subtitles_txt_path = Path(subtitles_txt_path)
 
     if output_dir is None:
-        # es: deadpan-uploader/build
-        output_dir = video_path.parent.parent / "build"
+        output_dir = video_path.parent
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Se non c'è il file di testo, usa direttamente il video originale.
     if not subtitles_txt_path.exists():
-        print(f"[Monday] Nessun file di sottotitoli trovato ({subtitles_txt_path}). Uso video originale.")
+        print(f"[Monday/subtitles] Nessun file di sottotitoli trovato ({subtitles_txt_path}). Uso video originale.")
         return str(video_path)
 
     try:
@@ -164,16 +150,14 @@ def add_burned_in_subtitles(
         raw_lines = subtitles_txt_path.read_text(encoding="latin-1").splitlines()
 
     if not any(line.strip() for line in raw_lines):
-        print("[Monday] File sottotitoli vuoto. Uso video originale.")
+        print("[Monday/subtitles] File sottotitoli vuoto. Uso video originale.")
         return str(video_path)
 
-    # Calcola durata video
     duration = _run_ffprobe_duration(video_path)
 
-    # Costruisci contenuto SRT
     srt_content = _build_srt_from_lines(raw_lines, duration)
     if not srt_content.strip():
-        print("[Monday] Impossibile costruire SRT dai sottotitoli. Uso video originale.")
+        print("[Monday/subtitles] Impossibile costruire SRT dai sottotitoli. Uso video originale.")
         return str(video_path)
 
     srt_path = output_dir / "subtitles.srt"
@@ -182,17 +166,15 @@ def add_burned_in_subtitles(
     output_video = output_dir / "video_with_subs.mp4"
 
     # Stile sottotitoli:
-    # - Fontsize 32
-    # - Outline e shadow per leggibilità
-    # - MarginV per tenerli un po' più alti (utile su mobile)
+    # - font bianco
+    # - bordo nero
+    # - box semi-trasparente
+    # - centrati in basso ma non troppo
+    # NB: per usare "force_style" serve libass (è disponibile su runner GitHub)
     subtitle_filter = (
-        f"subtitles={srt_path.name}"
-        ":force_style='Fontsize=32,"
-        "Outline=2,Shadow=1,"
-        "PrimaryColour=&H00FFFFFF&,"
-        "OutlineColour=&H00000000&,"
-        "MarginV=80,"
-        "Alignment=2'"
+        f"subtitles={srt_path.name}:"
+        "force_style='Fontsize=26,PrimaryColour=&H00FFFFFF&,OutlineColour=&H00000000&,"
+        "BorderStyle=3,Outline=2,BackColour=&H80000000&,Alignment=2,MarginV=80'"
     )
 
     cmd = [
@@ -207,50 +189,15 @@ def add_burned_in_subtitles(
         str(output_video),
     ]
 
-    print("[Monday] Lancio ffmpeg per burn-in sottotitoli...")
-    print("[Monday] Comando:", " ".join(cmd))
+    print("[Monday/subtitles] Lancio ffmpeg per burn-in sottotitoli...")
+    print("[Monday/subtitles] Comando:", " ".join(cmd))
 
     try:
         subprocess.run(cmd, check=True, cwd=str(output_dir))
-        print(f"[Monday] Video con sottotitoli generato: {output_video}")
+        print(f"[Monday/subtitles] Video con sottotitoli generato: {output_video}")
         return str(output_video)
-    except subprocess.CalledProcessError as e:
-        print("[Monday] Errore ffmpeg durante la creazione del video con sottotitoli.")
-        print(f"[Monday] Dettagli: {e}")
-        print("[Monday] Uso il video originale SENZA sottotitoli.")
+    except subprocess.CalledProcessError as e:  # noqa: BLE001
+        print("[Monday/subtitles] Errore ffmpeg durante la creazione del video con sottotitoli.")
+        print(f"[Monday/subtitles] Dettagli: {e}")
+        print("[Monday/subtitles] Uso il video originale SENZA sottotitoli.")
         return str(video_path)
-
-
-
-def generate_subtitles_txt_from_text(
-    raw_text: str,
-    subtitles_txt_path: str | Path,
-    max_chars_per_line: int = 60,
-) -> None:
-    """Genera automaticamente un file subtitles.txt a partire dal testo completo
-    usato per la voce (gTTS).
-    Una riga del file = un “blocco” di sottotitoli.
-    """
-    subtitles_txt_path = Path(subtitles_txt_path)
-    subtitles_txt_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Spezza il testo in frasi usando punteggiatura come delimitatore
-    rough_sentences = re.split(r"[.!?]+", raw_text)
-    lines: list[str] = []
-
-    for sent in rough_sentences:
-        sent = sent.strip()
-        if not sent:
-            continue
-        # Se la frase è lunghissima, la spezzo in 2 pezzi max
-        wrapped = wrap(sent, max_chars_per_line)
-        if not wrapped:
-            continue
-        lines.append(" ".join(wrapped[:2]))
-
-    if not lines:
-        print("[Monday] Nessuna frase trovata per i sottotitoli (generate_subtitles_txt_from_text).")
-        return
-
-    subtitles_txt_path.write_text("\n".join(lines), encoding="utf-8")
-    print(f"[Monday] File sottotitoli generato automaticamente: {subtitles_txt_path}")
