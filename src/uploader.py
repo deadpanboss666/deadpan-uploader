@@ -114,8 +114,8 @@ def upload_video(
     """Carica un video su YouTube e restituisce l'ID del video.
 
     Viene chiamata da main.py con:
-        upload_video(video_path=final_video, title=seo.title,
-                     description=seo.description, tags=seo.tags)
+        upload_video(video_path=final_video, title=title,
+                     description=description, tags=tags)
     """
     video_path = Path(video_path)
 
@@ -268,20 +268,28 @@ def generate_script():
 
 
 # ---------------------------------------------------------------------------
-# SINTESI VOCALE (gTTS -> WAV 48 kHz MONO)
+# SINTESI VOCALE (gTTS -> WAV 48 kHz MONO, CON CHUNK)
 # ---------------------------------------------------------------------------
 
 
 def synth_voice(text, output_path):
     """
     Genera una traccia audio parlata in inglese usando gTTS.
-    - text: testo completo dello short
-    - output_path: percorso del file WAV finale (48 kHz, mono)
+
+    Per ridurre gli errori dell'API gTTS:
+    - spezza il testo in chunk più piccoli
+    - genera un MP3 per ogni chunk
+    - concatena tutti gli MP3 con ffmpeg
+    - converte l'MP3 finale in WAV 48 kHz mono
+
+    Inoltre genera il file subtitles.txt usato dal modulo subtitles.py.
     """
     from pathlib import Path as _Path
     from gtts import gTTS
     import subprocess as _subprocess
+    import textwrap as _textwrap
 
+    # 1) Pulizia testo
     text = (text or "").strip()
     if not text:
         raise ValueError("Testo vuoto passato a synth_voice")
@@ -289,37 +297,122 @@ def synth_voice(text, output_path):
     output_path = _Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # 1) Crea un MP3 temporaneo con gTTS
-    tmp_mp3 = output_path.with_suffix(".mp3")
-
-    # Monday: genera automaticamente il file dei sottotitoli
+    # 2) Genera subito il file dei sottotitoli (testo completo)
     subtitles_txt_path = _Path("videos_to_upload") / "subtitles.txt"
+    subtitles_txt_path.parent.mkdir(parents=True, exist_ok=True)
     generate_subtitles_txt_from_text(
         raw_text=text,
         subtitles_txt_path=subtitles_txt_path,
     )
 
-    # Sintesi vocale
-    tts = gTTS(text=text, lang="en", slow=False)
-    tts.save(str(tmp_mp3))
+    # 3) Spezza il testo in frasi
+    temp = text.replace("?", "?.").replace("!", "!.")
+    sentences = [s.strip() for s in temp.split(".") if s.strip()]
+    if not sentences:
+        sentences = [text]
 
-    # 2) Converte l'MP3 in WAV 48 kHz mono con ffmpeg
-    cmd = [
+    # 4) Raggruppa in chunk di max ~180 caratteri
+    max_chars = 180
+    chunks: list[str] = []
+    current = ""
+
+    for s in sentences:
+        if len(current) + len(s) + 1 <= max_chars:
+            if current:
+                current += " " + s
+            else:
+                current = s
+        else:
+            if current:
+                chunks.append(current)
+            if len(s) > max_chars:
+                parts = _textwrap.wrap(s, max_chars)
+                chunks.extend(parts)
+                current = ""
+            else:
+                current = s
+
+    if current:
+        chunks.append(current)
+
+    if not chunks:
+        chunks = [text]
+
+    print(f"[Monday/voice] Numero chunk TTS: {len(chunks)}")
+
+    # 5) Genera un MP3 per ogni chunk
+    tmp_dir = output_path.parent
+    part_paths: list[_Path] = []
+
+    for idx, chunk in enumerate(chunks, start=1):
+        part_mp3 = tmp_dir / f"voice_part_{idx:02d}.mp3"
+        print(f"[Monday/voice] Genero chunk {idx}/{len(chunks)} (len={len(chunk)})...")
+        try:
+            tts = gTTS(text=chunk, lang="en", slow=False)
+            tts.save(str(part_mp3))
+        except Exception as e:  # noqa: BLE001
+            print(f"[Monday/voice] Errore gTTS sul chunk {idx}: {e}")
+            raise
+        part_paths.append(part_mp3)
+
+    # 6) Concatena tutti gli MP3 in un unico MP3
+    concat_list = tmp_dir / "voice_concat.txt"
+    concat_list.write_text(
+        "".join(f"file '{p.as_posix()}'\n" for p in part_paths),
+        encoding="utf-8",
+    )
+
+    tmp_mp3 = output_path.with_suffix(".mp3")
+
+    cmd_concat = [
         "ffmpeg",
-        "-y",              # sovrascrivi se esiste
-        "-i", str(tmp_mp3),
-        "-ac", "1",        # mono
-        "-ar", "48000",    # 48 kHz
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(concat_list),
+        "-c",
+        "copy",
+        str(tmp_mp3),
+    ]
+    print("[Monday/voice] Concateno i chunk audio con ffmpeg...")
+    _subprocess.run(cmd_concat, check=True)
+
+    # 7) Converte l'MP3 finale in WAV 48 kHz mono
+    cmd_wav = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(tmp_mp3),
+        "-ac",
+        "1",       # mono
+        "-ar",
+        "48000",   # 48 kHz
         str(output_path),
     ]
-    print("Eseguo ffmpeg per convertire l'audio TTS...")
-    _subprocess.run(cmd, check=True)
+    print("[Monday/voice] Converto l'audio in WAV 48 kHz mono...")
+    _subprocess.run(cmd_wav, check=True)
 
-    # 3) Rimuovi l'MP3 temporaneo
+    # 8) Pulizia file temporanei
+    for p in part_paths:
+        try:
+            p.unlink()
+        except FileNotFoundError:
+            pass
+
+    try:
+        concat_list.unlink()
+    except FileNotFoundError:
+        pass
+
     try:
         tmp_mp3.unlink()
     except FileNotFoundError:
         pass
+
+    print(f"[Monday/voice] Audio finale pronto: {output_path}")
 
 
 # ---------------------------------------------------------------------------
