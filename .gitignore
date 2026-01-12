@@ -1,14 +1,14 @@
+# Secrets / tokens (NON committare mai)
+**/client_secret*.txt
+**/token*.txt
+**/refresh_token*.py
+**/token.json
+**/client_secret.json
+
 # Python cache
 __pycache__/
 *.pyc
 
-# Local credentials (do NOT commit)
-src/client_secret.json
-src/token.json
-src/service-account.json
-
-# Local helper scripts
-run_pipeline.bat
-
-# Local data
-data/
+# Build/output
+build/
+videos_to_upload/
