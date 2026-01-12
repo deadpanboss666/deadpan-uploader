@@ -1,5 +1,5 @@
-# backgrounds.py — Monday (safe version)
-# Generazione automatica di sfondi video procedurali (nessuna immagine fissa)
+# backgrounds.py — Monday (safe color-only version)
+# Generazione automatica di sfondi video procedurali (solo color lavfi)
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 
 DEFAULT_FPS = 30
-DEFAULT_RESOLUTION = "1080x1920"  # 9:16 verticale per Shorts
+DEFAULT_RESOLUTION = "1080x1920"  # verticale per Shorts
 
 
 def _run_ffprobe_duration(path: Path) -> float:
@@ -24,8 +24,7 @@ def _run_ffprobe_duration(path: Path) -> float:
         str(path),
     ]
     result = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
-    duration_str = result.decode().strip()
-    return float(duration_str)
+    return float(result.decode().strip())
 
 
 def get_media_duration(media_path: str | Path, fallback: float = 30.0) -> float:
@@ -50,33 +49,34 @@ def generate_procedural_background(
     fps: int = DEFAULT_FPS,
     resolution: str = DEFAULT_RESOLUTION,
 ) -> Path:
-    """Genera un video di sfondo procedurale (noise / grain noir).
+    """Genera un video di sfondo usando solo la sorgente 'color' di ffmpeg.
 
-    Versione compatibile con ffmpeg su GitHub Actions:
-    - sorgente: color nero
-    - filtro: noise animato + eq (contrasto) desaturato
+    Niente filtri complessi: massima compatibilità su GitHub Actions.
+    Il colore viene scelto in modo pseudo-random da una palette dark.
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Clamp della durata (min 3s, max 60s)
+    # Clamp durata (min 3s, max 60s)
     duration = max(3.0, min(duration, 60.0))
 
-    # Parametri random per variare il look
-    seed = random.randint(0, 999_999)
-    grain_strength = random.choice([15, 20, 25])
-    contrast = round(random.uniform(1.15, 1.55), 2)
-    brightness = round(random.uniform(-0.08, 0.03), 2)
+    # Palette di colori scuri (in stile horror / noir)
+    dark_palette = [
+        "#050314",
+        "#020617",
+        "#0b1120",
+        "#111827",
+        "#1f2933",
+        "#17141f",
+        "#140b0b",
+        "#101318",
+    ]
+    color = random.choice(dark_palette)
+    print(f"[Monday/backgrounds] Colore scelto per lo sfondo: {color}")
 
-    # Catena di filtri ffmpeg semplificata:
-    # - noise: grana in movimento con seed random
-    # - format: yuv420p per compatibilità
-    # - eq: contrasto + leggera variazione di luminosità, desaturato
-    filter_chain = (
-        f"noise=alls={grain_strength}:allf=t:seed={seed},"
-        "format=yuv420p,"
-        f"eq=contrast={contrast}:brightness={brightness}:saturation=0.0"
-    )
+    # Sorgente lavfi: color
+    # Usiamo solo 'format=yuv420p' per compatibilità con i player.
+    filter_chain = "format=yuv420p"
 
     cmd = [
         "ffmpeg",
@@ -84,7 +84,7 @@ def generate_procedural_background(
         "-f",
         "lavfi",
         "-i",
-        f"color=c=black:s={resolution}:r={fps}",
+        f"color=c={color}:s={resolution}:r={fps}",
         "-vf",
         filter_chain,
         "-t",
@@ -92,7 +92,7 @@ def generate_procedural_background(
         str(output_path),
     ]
 
-    print("[Monday/backgrounds] Genero sfondo procedurale...")
+    print("[Monday/backgrounds] Genero sfondo procedurale (solo color)...")
     print("[Monday/backgrounds] Comando:", " ".join(cmd))
     subprocess.run(cmd, check=True)
     print(f"[Monday/backgrounds] Sfondo creato: {output_path}")
