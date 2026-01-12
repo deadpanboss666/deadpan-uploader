@@ -12,3 +12,7 @@ __pycache__/
 # Build/output
 build/
 videos_to_upload/
+
+# Local helpers / data
+data/
+run_pipeline.bat
