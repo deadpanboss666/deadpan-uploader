@@ -1,16 +1,24 @@
 # subtitles.py — Monday
-# Generazione SRT e burn-in sottotitoli con ffmpeg, stile più leggibile
+# Generazione SRT con frasi principali e timing proporzionale alla voce
 
 from __future__ import annotations
 
 import math
+import re
 import subprocess
 from pathlib import Path
 from textwrap import wrap
 
 
+# ---------------------------------------------------------------------------
+# Utilità di base
+# ---------------------------------------------------------------------------
+
+
 def _run_ffprobe_duration(video_path: Path) -> float:
-    """Usa ffprobe per recuperare la durata del video in secondi."""
+    """Usa ffprobe per la durata del video in secondi.
+    Se fallisce, usa 25s di fallback.
+    """
     cmd = [
         "ffprobe",
         "-v",
@@ -28,13 +36,13 @@ def _run_ffprobe_duration(video_path: Path) -> float:
         print(f"[Monday/subtitles] Durata video rilevata: {duration:.2f}s")
         return duration
     except Exception as e:  # noqa: BLE001
-        print(f"[Monday/subtitles] Attenzione: impossibile leggere durata video con ffprobe: {e}")
-        print("[Monday/subtitles] Uso durata di fallback: 30s.")
-        return 30.0
+        print(f"[Monday/subtitles] Impossibile leggere la durata con ffprobe: {e}")
+        print("[Monday/subtitles] Uso durata di fallback: 25s.")
+        return 25.0
 
 
 def _format_ts(seconds: float) -> str:
-    """Converte i secondi in formato SRT (HH:MM:SS,mmm)."""
+    """Converte secondi in formato SRT (HH:MM:SS,mmm)."""
     if seconds < 0:
         seconds = 0.0
     ms = int(round((seconds - int(seconds)) * 1000))
@@ -44,84 +52,175 @@ def _format_ts(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
-def _build_srt_from_lines(
-    lines: list[str],
-    video_duration: float,
-    max_chars_per_line: int = 32,
-) -> str:
-    """Costruisce il contenuto SRT a partire dalle righe di testo.
+# ---------------------------------------------------------------------------
+# Preparazione frasi per i sottotitoli
+# ---------------------------------------------------------------------------
 
-    - spezza il testo in "blocchi" massimo 2 righe
-    - cerca di distribuire il tempo in modo uniforme
+
+def _split_into_caption_units(raw_text: str, max_chars_per_caption: int = 80) -> list[str]:
     """
-    chunks: list[str] = []
+    Prende il testo completo e lo taglia in frasi "forti" per i sottotitoli.
 
-    for raw in lines:
-        raw = raw.strip()
-        if not raw:
-            continue
-        wrapped = wrap(raw, max_chars_per_line)
-        if not wrapped:
-            continue
-        chunks.append("\n".join(wrapped[:2]))  # max 2 righe
-
-    if not chunks:
-        return ""
-
-    n = len(chunks)
-    # tempo medio per blocco, ma con minimo 1.2s per non essere troppo veloci
-    slot = max(video_duration / n, 1.2)
-
-    srt_lines: list[str] = []
-    start_t = 0.5  # piccolo offset iniziale
-
-    for idx, text in enumerate(chunks, start=1):
-        end_t = start_t + slot - 0.3
-        if end_t <= start_t:
-            end_t = start_t + 0.7
-
-        srt_lines.append(str(idx))
-        srt_lines.append(f"{_format_ts(start_t)} --> {_format_ts(end_t)}")
-        srt_lines.append(text)
-        srt_lines.append("")
-
-        start_t = end_t + 0.1
-
-    return "\n".join(srt_lines).strip() + "\n"
-
-
-def generate_subtitles_txt_from_text(
-    raw_text: str,
-    subtitles_txt_path: str | Path,
-) -> Path:
+    Regole:
+    - normalizza spazi
+    - spezza su ., ?, !
+    - unisce frasi molto corte finché non superano max_chars_per_caption
+    - se una frase è troppo lunga, la spezza
     """
-    Converte lo script intero (una stringa lunga) in un file subtitles.txt
-    dove ogni riga è una "frase" (= blocco SRT).
+    text = re.sub(r"\s+", " ", (raw_text or "").strip())
+    if not text:
+        return []
+
+    # split su fine frase
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    sentences = [s.strip() for s in sentences if s.strip()]
+
+    units: list[str] = []
+    buffer = ""
+
+    for sent in sentences:
+        # Proviamo ad aggiungere la frase al buffer corrente
+        candidate = f"{buffer} {sent}".strip() if buffer else sent
+
+        if len(candidate) <= max_chars_per_caption:
+            buffer = candidate
+        else:
+            # Il buffer è pieno, lo salviamo
+            if buffer:
+                units.append(buffer)
+                buffer = ""
+
+            # Se la frase da sola è troppo lunga, spezzala
+            if len(sent) <= max_chars_per_caption:
+                buffer = sent
+            else:
+                chunks = wrap(sent, max_chars_per_caption)
+                # tutte le parti tranne l'ultima vanno direttamente
+                for c in chunks[:-1]:
+                    units.append(c.strip())
+                buffer = chunks[-1].strip()
+
+    if buffer:
+        units.append(buffer)
+
+    return units
+
+
+def generate_subtitles_txt_from_text(raw_text: str, subtitles_txt_path: str | Path) -> None:
+    """
+    Prende lo script completo e genera un file di testo con
+    le frasi principali, una per riga. Sarà poi usato per creare l'SRT.
     """
     subtitles_txt_path = Path(subtitles_txt_path)
     subtitles_txt_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Spezzatura grossolana: punti, punti esclamativi, interrogativi
-    temp = raw_text.replace("?", "?.").replace("!", "!.")
-    sentences = [s.strip() for s in temp.split(".") if s.strip()]
+    units = _split_into_caption_units(raw_text, max_chars_per_caption=80)
+    if not units:
+        print("[Monday/subtitles] Nessun testo per sottotitoli; file vuoto.")
+        subtitles_txt_path.write_text("", encoding="utf-8")
+        return
 
-    # Se è troppo poco, spezza anche per virgole lunghe
-    if len(sentences) < 4:
-        extra: list[str] = []
-        for s in sentences:
-            parts = [p.strip() for p in s.split(",") if p.strip()]
-            if len(parts) <= 1:
-                extra.append(s)
-            else:
-                extra.extend(parts)
-        sentences = extra
-
-    with subtitles_txt_path.open("w", encoding="utf-8") as f:
-        for s in sentences:
-            f.write(s + "\n")
-
+    # Salviamo ogni "caption unit" su una riga
+    subtitles_txt_path.write_text("\n".join(units), encoding="utf-8")
     print(f"[Monday/subtitles] File subtitles.txt generato: {subtitles_txt_path}")
-    return subtitles_txt_path
+
+
+# ---------------------------------------------------------------------------
+# Costruzione SRT con timing proporzionale alla lunghezza delle frasi
+# ---------------------------------------------------------------------------
+
+
+def _build_srt_from_lines(
+    lines: list[str],
+    video_duration: float,
+    max_chars_per_line: int = 36,
+) -> str:
+    """
+    Costruisce il contenuto SRT:
+
+    - pulisce le righe vuote
+    - per ogni riga crea un blocco con max 2 righe a schermo
+    - assegna la durata di ogni blocco in modo proporzionale
+      alla lunghezza del testo (più testo = più tempo)
+    """
+    # Pulizia e rimozione righe vuote
+    captions: list[dict] = []
+    for raw in lines:
+        text = raw.strip()
+        if not text:
+            continue
+        no_newline = re.sub(r"\s+", " ", text)
+        if not no_newline:
+            continue
+
+        # Wrapping a 2 righe massimo per leggibilità
+        wrapped_lines = wrap(no_newline, max_chars_per_line)
+        if not wrapped_lines:
+            continue
+
+        display_text = "\n".join(wrapped_lines[:2])
+        weight = max(len(no_newline), 10)  # almeno un peso minimo
+
+        captions.append(
+            {
+                "raw": no_newline,
+                "text": display_text,
+                "weight": weight,
+            }
+        )
+
+    if not captions:
+        return ""
+
+    total_weight = sum(c["weight"] for c in captions)
+    if total_weight <= 0 or not math.isfinite(total_weight):
+        total_weight = len(captions)
+
+    # Primo pass: durate proporzionali alla lunghezza
+    min_duration = 1.2  # secondi minimi per caption
+    durations = []
+    for c in captions:
+        frac = c["weight"] / total_weight
+        ideal = video_duration * frac
+        dur = max(min_duration, ideal)
+        durations.append(dur)
+
+    # Normalizziamo per far tornare la somma alla durata del video
+    sum_dur = sum(durations)
+    if sum_dur <= 0 or not math.isfinite(sum_dur):
+        # fallback: divisione uniforme
+        slot = max(video_duration / len(captions), min_duration)
+        durations = [slot] * len(captions)
+        sum_dur = slot * len(captions)
+
+    scale = video_duration / sum_dur
+    durations = [d * scale for d in durations]
+
+    # Costruzione blocchi SRT
+    srt_lines: list[str] = []
+    current_time = 0.0
+
+    for idx, (cap, dur) in enumerate(zip(captions, durations), start=1):
+        start_t = current_time
+        end_t = start_t + dur
+
+        # leggero margine finale per evitare sforamento
+        if end_t > video_duration:
+            end_t = video_duration
+
+        srt_lines.append(str(idx))
+        srt_lines.append(f"{_format_ts(start_t)} --> {_format_ts(end_t)}")
+        srt_lines.append(cap["text"])
+        srt_lines.append("")  # riga vuota separatrice
+
+        current_time = end_t
+
+    return "\n".join(srt_lines).strip() + "\n"
+
+
+# ---------------------------------------------------------------------------
+# ffmpeg: burn-in sottotitoli
+# ---------------------------------------------------------------------------
 
 
 def add_burned_in_subtitles(
@@ -129,14 +228,15 @@ def add_burned_in_subtitles(
     subtitles_txt_path: str | Path,
     output_dir: str | Path | None = None,
 ) -> str:
-    """Crea un nuovo video con sottotitoli bruciati.
+    """
+    Crea un nuovo video con sottotitoli bruciati.
     Se qualcosa va storto, restituisce il path del video originale.
     """
     video_path = Path(video_path)
     subtitles_txt_path = Path(subtitles_txt_path)
 
     if output_dir is None:
-        output_dir = video_path.parent
+        output_dir = video_path.parent  # es: videos_to_upload
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -153,11 +253,13 @@ def add_burned_in_subtitles(
         print("[Monday/subtitles] File sottotitoli vuoto. Uso video originale.")
         return str(video_path)
 
+    # Durata video
     duration = _run_ffprobe_duration(video_path)
 
+    # Costruzione SRT
     srt_content = _build_srt_from_lines(raw_lines, duration)
     if not srt_content.strip():
-        print("[Monday/subtitles] Impossibile costruire SRT dai sottotitoli. Uso video originale.")
+        print("[Monday/subtitles] Impossibile costruire SRT. Uso video originale.")
         return str(video_path)
 
     srt_path = output_dir / "subtitles.srt"
@@ -165,25 +267,13 @@ def add_burned_in_subtitles(
 
     output_video = output_dir / "video_with_subs.mp4"
 
-    # Stile sottotitoli:
-    # - font bianco
-    # - bordo nero
-    # - box semi-trasparente
-    # - centrati in basso ma non troppo
-    # NB: per usare "force_style" serve libass (è disponibile su runner GitHub)
-    subtitle_filter = (
-        f"subtitles={srt_path.name}:"
-        "force_style='Fontsize=26,PrimaryColour=&H00FFFFFF&,OutlineColour=&H00000000&,"
-        "BorderStyle=3,Outline=2,BackColour=&H80000000&,Alignment=2,MarginV=80'"
-    )
-
     cmd = [
         "ffmpeg",
         "-y",
         "-i",
         str(video_path),
         "-vf",
-        subtitle_filter,
+        f"subtitles={srt_path.name}",
         "-c:a",
         "copy",
         str(output_video),
