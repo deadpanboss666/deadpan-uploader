@@ -4,10 +4,9 @@ on:
   push:
     branches:
       - main
-  schedule:
-    # Esecuzione automatica a orari fissi (puoi cambiare i tempi quando vuoi)
-    # Esempio: 0 15,19,23 * * *  -> alle 15, 19 e 23 ogni giorno
-    # - cron: "0 15,19,23 * * *"
+  # Se in futuro vuoi lo schedule, scommenta queste righe:
+  # schedule:
+  #   - cron: "0 15,19,23 * * *"
 
 jobs:
   run-pipeline:
