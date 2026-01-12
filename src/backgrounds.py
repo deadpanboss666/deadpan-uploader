@@ -1,5 +1,5 @@
 # backgrounds.py — Monday
-# Utility per durate media e generazione background procedurale 9:16
+# Generazione automatica di sfondi video procedurali (nessuna immagine fissa)
 
 from __future__ import annotations
 
@@ -7,18 +7,12 @@ import random
 import subprocess
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent
-ROOT_DIR = BASE_DIR.parent
-ASSETS_DIR = ROOT_DIR / "assets"
+DEFAULT_FPS = 30
+DEFAULT_RESOLUTION = "1080x1920"  # 9:16 verticale per Shorts
 
 
-def get_media_duration(path: str | Path) -> float:
-    """Restituisce la durata di un file audio/video in secondi usando ffprobe.
-
-    In caso di problemi ritorna 30.0s così la pipeline non esplode.
-    """
-    path = Path(path)
-
+def _run_ffprobe_duration(path: Path) -> float:
+    """Usa ffprobe per leggere la durata di un media in secondi."""
     cmd = [
         "ffprobe",
         "-v",
@@ -29,117 +23,79 @@ def get_media_duration(path: str | Path) -> float:
         "default=nokey=1:noprint_wrappers=1",
         str(path),
     ]
+    result = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
+    duration_str = result.decode().strip()
+    return float(duration_str)
+
+
+def get_media_duration(media_path: str | Path, fallback: float = 30.0) -> float:
+    """Restituisce la durata del media, con fallback in caso di errore."""
+    media_path = Path(media_path)
+
     try:
-        out = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
-        duration_str = out.decode().strip()
-        duration = float(duration_str)
-        print(f"[Monday][bg] Durata media rilevata: {duration:.2f}s")
+        duration = _run_ffprobe_duration(media_path)
+        print(f"[Monday/backgrounds] Durata media rilevata: {duration:.2f}s")
         return duration
     except Exception as e:  # noqa: BLE001
-        print(f"[Monday][bg] Impossibile leggere durata con ffprobe ({path}): {e}")
-        print("[Monday][bg] Uso durata di fallback: 30s.")
-        return 30.0
-
-
-def _pick_background_image() -> Path | None:
-    """Cerca un'immagine di sfondo in assets/ (background*.jpg/png ecc.).
-
-    Ritorna il Path oppure None se non trova nulla.
-    """
-    if not ASSETS_DIR.exists():
-        return None
-
-    candidates = list(ASSETS_DIR.glob("*.jpg")) + list(
-        ASSETS_DIR.glob("*.jpeg")
-    ) + list(ASSETS_DIR.glob("*.png"))
-
-    if not candidates:
-        return None
-
-    # Scelta casuale per dare un po' di varietà
-    img = random.choice(candidates)
-    print(f"[Monday][bg] Uso immagine di sfondo: {img}")
-    return img
+        print(
+            "[Monday/backgrounds] Impossibile leggere la durata con ffprobe "
+            f"({e}). Uso fallback {fallback}s."
+        )
+        return fallback
 
 
 def generate_procedural_background(
-    duration_seconds: float,
+    duration: float,
     output_path: str | Path,
-    width: int = 1080,
-    height: int = 1920,
-    fps: int = 30,
-) -> str | None:
-    """Genera un background video 9:16 con una leggera animazione di zoom/pan.
+    fps: int = DEFAULT_FPS,
+    resolution: str = DEFAULT_RESOLUTION,
+) -> Path:
+    """Genera un video di sfondo procedurale (noise / grain noir).
 
-    - Se trova una o più immagini in assets/, usa una di quelle con effetto Ken Burns.
-    - Se non trova nulla, genera un semplice background colorato.
-
-    Ritorna la stringa del percorso del video generato, oppure None se fallisce.
+    - Nessuna immagine di input
+    - Pattern rumoroso in movimento + vignette
+    - Parametri randomizzati ad ogni chiamata per variare lo stile
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Durata minima di sicurezza
-    if duration_seconds <= 0:
-        duration_seconds = 30.0
+    # Clamp della durata (min 3s, max 60s)
+    duration = max(3.0, min(duration, 60.0))
 
-    bg_image = _pick_background_image()
+    # Parametri random per variare il look
+    seed = random.randint(0, 999_999)
+    grain_strength = random.choice([10, 20, 30])
+    contrast = round(random.uniform(1.1, 1.6), 2)
+    brightness = round(random.uniform(-0.10, 0.05), 2)
 
-    try:
-        if bg_image is not None:
-            # Effetto Ken Burns (zoom lento) sull'immagine scelta
-            zoom_filter = (
-                "zoompan="
-                "z='min(zoom+0.0015,1.25)':"
-                "x='iw/2-(iw/zoom/2)':"
-                "y='ih/2-(ih/zoom/2)',"
-                f"scale={width}:{height},"
-                "format=yuv420p"
-            )
+    # Catena di filtri ffmpeg:
+    # - noise: grana in movimento con seed random
+    # - eq: contrasto + leggera variazione di luminosità, desaturato
+    # - vignette: bordi più scuri per mood "Deadpan"
+    filter_chain = (
+        f"noise=alls={grain_strength}:allf=t+u:seed={seed},"
+        "format=yuv420p,"
+        f"eq=contrast={contrast}:brightness={brightness}:saturation=0.0,"
+        "vignette=PI/4:0.7"
+    )
 
-            cmd = [
-                "ffmpeg",
-                "-y",
-                "-loop",
-                "1",
-                "-i",
-                str(bg_image),
-                "-vf",
-                zoom_filter,
-                "-t",
-                f"{duration_seconds:.3f}",
-                "-r",
-                str(fps),
-                "-an",
-                str(output_path),
-            ]
-            print("[Monday][bg] Genero background procedurale da immagine...")
-        else:
-            # Sorgente sintetica: semplice colore (garantito che funzioni ovunque)
-            color = random.choice(
-                ["#05070b", "#080017", "#101820", "#111111", "#1a0b24"]
-            )
-            cmd = [
-                "ffmpeg",
-                "-y",
-                "-f",
-                "lavfi",
-                "-i",
-                f"color=c={color}:s={width}x{height}:d={duration_seconds:.3f}",
-                "-vf",
-                "format=yuv420p",
-                "-r",
-                str(fps),
-                "-an",
-                str(output_path),
-            ]
-            print(f"[Monday][bg] Genero background procedurale di colore {color}...")
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        f"color=c=black:size={resolution}:rate={fps}",
+        "-vf",
+        filter_chain,
+        "-t",
+        f"{duration:.2f}",
+        str(output_path),
+    ]
 
-        print("[Monday][bg] Comando background:", " ".join(cmd))
-        subprocess.run(cmd, check=True)
-        print(f"[Monday][bg] Background generato: {output_path}")
-        return str(output_path)
-    except subprocess.CalledProcessError as e:  # noqa: BLE001
-        print("[Monday][bg] ERRORE durante la generazione del background.")
-        print(f"[Monday][bg] Dettagli: {e}")
-        return None
+    print("[Monday/backgrounds] Genero sfondo procedurale...")
+    print("[Monday/backgrounds] Comando:", " ".join(cmd))
+    subprocess.run(cmd, check=True)
+    print(f"[Monday/backgrounds] Sfondo creato: {output_path}")
+
+    return output_path
