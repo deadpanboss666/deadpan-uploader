@@ -1,5 +1,7 @@
-# backgrounds.py — Monday (safe color-only version)
-# Generazione automatica di sfondi video procedurali (solo color lavfi)
+# backgrounds.py — Monday
+# Sfondi procedurali automatici:
+# - tenta prima uno sfondo animato (zoom lento + blur)
+# - se ffmpeg fallisce, usa uno sfondo statico sicuro
 
 from __future__ import annotations
 
@@ -11,8 +13,10 @@ DEFAULT_FPS = 30
 DEFAULT_RESOLUTION = "1080x1920"  # verticale per Shorts
 
 
+# --------------------------------------------------------------------
+# Durata media (serve per agganciare la lunghezza della voce)
+# --------------------------------------------------------------------
 def _run_ffprobe_duration(path: Path) -> float:
-    """Usa ffprobe per leggere la durata di un media in secondi."""
     cmd = [
         "ffprobe",
         "-v",
@@ -28,7 +32,6 @@ def _run_ffprobe_duration(path: Path) -> float:
 
 
 def get_media_duration(media_path: str | Path, fallback: float = 30.0) -> float:
-    """Restituisce la durata del media, con fallback in caso di errore."""
     media_path = Path(media_path)
 
     try:
@@ -43,24 +46,11 @@ def get_media_duration(media_path: str | Path, fallback: float = 30.0) -> float:
         return fallback
 
 
-def generate_procedural_background(
-    duration: float,
-    output_path: str | Path,
-    fps: int = DEFAULT_FPS,
-    resolution: str = DEFAULT_RESOLUTION,
-) -> Path:
-    """Genera un video di sfondo usando solo la sorgente 'color' di ffmpeg.
-
-    Niente filtri complessi: massima compatibilità su GitHub Actions.
-    Il colore viene scelto in modo pseudo-random da una palette dark.
-    """
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Clamp durata (min 3s, max 60s)
-    duration = max(3.0, min(duration, 60.0))
-
-    # Palette di colori scuri (in stile horror / noir)
+# --------------------------------------------------------------------
+# Sfondo procedurale
+# --------------------------------------------------------------------
+def _choose_dark_color() -> str:
+    """Palette di colori scuri in stile horror / true crime."""
     dark_palette = [
         "#050314",
         "#020617",
@@ -73,10 +63,29 @@ def generate_procedural_background(
     ]
     color = random.choice(dark_palette)
     print(f"[Monday/backgrounds] Colore scelto per lo sfondo: {color}")
+    return color
 
-    # Sorgente lavfi: color
-    # Usiamo solo 'format=yuv420p' per compatibilità con i player.
-    filter_chain = "format=yuv420p"
+
+def _generate_animated_background(
+    duration: float,
+    output_path: Path,
+    fps: int,
+    resolution: str,
+    color: str,
+) -> None:
+    """Prova a creare uno sfondo ANIMATO (zoom lento + blur).
+    Se qualcosa va storto, solleva CalledProcessError e il chiamante
+    farà il fallback allo sfondo statico.
+    """
+    # zoompan: zoom lento verso il centro
+    vf_expr = (
+        f"zoompan=z='min(1.2,zoom+0.0004)':"
+        f"x='iw/2-(iw/zoom)/2':"
+        f"y='ih/2-(ih/zoom)/2':"
+        f"d=1:fps={fps},"
+        "boxblur=2:2,"
+        "format=yuv420p"
+    )
 
     cmd = [
         "ffmpeg",
@@ -86,15 +95,70 @@ def generate_procedural_background(
         "-i",
         f"color=c={color}:s={resolution}:r={fps}",
         "-vf",
-        filter_chain,
+        vf_expr,
         "-t",
         f"{duration:.2f}",
         str(output_path),
     ]
 
-    print("[Monday/backgrounds] Genero sfondo procedurale (solo color)...")
+    print("[Monday/backgrounds] Provo sfondo ANIMATO...")
     print("[Monday/backgrounds] Comando:", " ".join(cmd))
     subprocess.run(cmd, check=True)
-    print(f"[Monday/backgrounds] Sfondo creato: {output_path}")
+    print("[Monday/backgrounds] Sfondo animato creato con successo.")
+
+
+def _generate_static_background(
+    duration: float,
+    output_path: Path,
+    fps: int,
+    resolution: str,
+    color: str,
+) -> None:
+    """Versione di fallback: colore piatto, ma sicuro al 100%."""
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        f"color=c={color}:s={resolution}:r={fps}",
+        "-vf",
+        "format=yuv420p",
+        "-t",
+        f"{duration:.2f}",
+        str(output_path),
+    ]
+
+    print("[Monday/backgrounds] Uso sfondo STATICO di fallback...")
+    print("[Monday/backgrounds] Comando:", " ".join(cmd))
+    subprocess.run(cmd, check=True)
+    print("[Monday/backgrounds] Sfondo statico creato.")
+
+
+def generate_procedural_background(
+    duration: float,
+    output_path: str | Path,
+    fps: int = DEFAULT_FPS,
+    resolution: str = DEFAULT_RESOLUTION,
+) -> Path:
+    """Genera automaticamente uno sfondo:
+    - colore diverso ad ogni short
+    - prima prova animato
+    - se fallisce, fallback statico
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Clamp durata (3–60s)
+    duration = max(3.0, min(duration, 60.0))
+
+    color = _choose_dark_color()
+
+    try:
+        _generate_animated_background(duration, output_path, fps, resolution, color)
+    except subprocess.CalledProcessError as e:
+        print("[Monday/backgrounds] Errore sfondo animato:", e)
+        print("[Monday/backgrounds] Faccio fallback allo sfondo statico...")
+        _generate_static_background(duration, output_path, fps, resolution, color)
 
     return output_path
