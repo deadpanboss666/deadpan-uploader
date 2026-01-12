@@ -1,127 +1,145 @@
-from pathlib import Path
+# backgrounds.py — Monday
+# Utility per durate media e generazione background procedurale 9:16
+
+from __future__ import annotations
+
 import random
+import subprocess
+from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter
+BASE_DIR = Path(__file__).resolve().parent
+ROOT_DIR = BASE_DIR.parent
+ASSETS_DIR = ROOT_DIR / "assets"
 
 
-def _hex_to_rgb(h: str) -> tuple[int, int, int]:
-    h = h.lstrip("#")
-    return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+def get_media_duration(path: str | Path) -> float:
+    """Restituisce la durata di un file audio/video in secondi usando ffprobe.
 
-
-def _choose_palette(text: str) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+    In caso di problemi ritorna 30.0s così la pipeline non esplode.
     """
-    Sceglie una coppia di colori (alto -> basso) in base alle parole chiave del testo.
-    """
-    t = text.lower()
+    path = Path(path)
 
-    if any(w in t for w in ["blood", "murder", "kill", "knife", "stab"]):
-        # rosso sangue + nero
-        return _hex_to_rgb("#220000"), _hex_to_rgb("#640000")
-
-    if any(w in t for w in ["missing", "disappeared", "vanished", "lost"]):
-        # blu freddo / caso irrisolto
-        return _hex_to_rgb("#020b1f"), _hex_to_rgb("#12324f")
-
-    if any(w in t for w in ["hospital", "asylum", "clinic"]):
-        # verde malato
-        return _hex_to_rgb("#02110b"), _hex_to_rgb("#0b3b2b")
-
-    if any(w in t for w in ["police", "case file", "detective", "evidence"]):
-        # blu/grigio investigativo
-        return _hex_to_rgb("#050712"), _hex_to_rgb("#1c2538")
-
-    if any(w in t for w in ["ghost", "haunted", "spirit", "curse"]):
-        # viola spettrale
-        return _hex_to_rgb("#0a0210"), _hex_to_rgb("#35123b")
-
-    # fallback: palette oscura casuale tra alcune opzioni
-    palettes = [
-        ("#050505", "#262626"),  # grigio cemento
-        ("#020308", "#1a1022"),  # blu/viola notturno
-        ("#060102", "#3b1212"),  # rosso scuro
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=nokey=1:noprint_wrappers=1",
+        str(path),
     ]
-    top_hex, bottom_hex = random.choice(palettes)
-    return _hex_to_rgb(top_hex), _hex_to_rgb(bottom_hex)
+    try:
+        out = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
+        duration_str = out.decode().strip()
+        duration = float(duration_str)
+        print(f"[Monday][bg] Durata media rilevata: {duration:.2f}s")
+        return duration
+    except Exception as e:  # noqa: BLE001
+        print(f"[Monday][bg] Impossibile leggere durata con ffprobe ({path}): {e}")
+        print("[Monday][bg] Uso durata di fallback: 30s.")
+        return 30.0
 
 
-def _make_gradient(width: int, height: int, top_color, bottom_color) -> Image.Image:
+def _pick_background_image() -> Path | None:
+    """Cerca un'immagine di sfondo in assets/ (background*.jpg/png ecc.).
+
+    Ritorna il Path oppure None se non trova nulla.
     """
-    Crea un semplice gradiente verticale scuro.
-    """
-    img = Image.new("RGB", (width, height), top_color)
-    draw = ImageDraw.Draw(img)
+    if not ASSETS_DIR.exists():
+        return None
 
-    for y in range(height):
-        ratio = y / max(1, height - 1)
-        r = int(top_color[0] * (1 - ratio) + bottom_color[0] * ratio)
-        g = int(top_color[1] * (1 - ratio) + bottom_color[1] * ratio)
-        b = int(top_color[2] * (1 - ratio) + bottom_color[2] * ratio)
-        draw.line([(0, y), (width, y)], fill=(r, g, b))
+    candidates = list(ASSETS_DIR.glob("*.jpg")) + list(
+        ASSETS_DIR.glob("*.jpeg")
+    ) + list(ASSETS_DIR.glob("*.png"))
 
+    if not candidates:
+        return None
+
+    # Scelta casuale per dare un po' di varietà
+    img = random.choice(candidates)
+    print(f"[Monday][bg] Uso immagine di sfondo: {img}")
     return img
 
 
-def _add_vignette(img: Image.Image) -> Image.Image:
+def generate_procedural_background(
+    duration_seconds: float,
+    output_path: str | Path,
+    width: int = 1080,
+    height: int = 1920,
+    fps: int = 30,
+) -> str | None:
+    """Genera un background video 9:16 con una leggera animazione di zoom/pan.
+
+    - Se trova una o più immagini in assets/, usa una di quelle con effetto Ken Burns.
+    - Se non trova nulla, genera un semplice background colorato.
+
+    Ritorna la stringa del percorso del video generato, oppure None se fallisce.
     """
-    Aggiunge una vignettatura scura ai bordi per effetto più cinematografico.
-    """
-    width, height = img.size
-    vignette = Image.new("L", (width, height), 0)
-    draw = ImageDraw.Draw(vignette)
-
-    # ellisse centrale chiara, bordi scuri
-    draw.ellipse(
-        [
-            (int(width * 0.05), int(height * 0.05)),
-            (int(width * 0.95), int(height * 0.95)),
-        ],
-        fill=255,
-    )
-
-    vignette = vignette.filter(ImageFilter.GaussianBlur(radius=80))
-    img = img.convert("RGB")
-    dark_layer = Image.new("RGB", (width, height), (0, 0, 0))
-    img = Image.composite(img, dark_layer, vignette.point(lambda v: 255 - v))
-
-    return img
-
-
-def _add_noise(img: Image.Image, intensity: int = 12) -> Image.Image:
-    """
-    Aggiunge una leggera grana per evitare fondo troppo piatto.
-    """
-    import random as rnd
-
-    width, height = img.size
-    pixels = img.load()
-    for _ in range(width * height // 40):
-        x = rnd.randrange(0, width)
-        y = rnd.randrange(0, height)
-        r, g, b = pixels[x, y]
-        delta = rnd.randint(-intensity, intensity)
-        nr = max(0, min(255, r + delta))
-        ng = max(0, min(255, g + delta))
-        nb = max(0, min(255, b + delta))
-        pixels[x, y] = (nr, ng, nb)
-
-    return img
-
-
-def generate_background(text: str, output_path: Path) -> Path:
-    """
-    Genera uno sfondo 1536x1024 in locale, dark, basato sul testo del caso.
-    Nessuna chiamata API, nessun costo.
-    """
-    width, height = 1536, 1024
-
-    top_color, bottom_color = _choose_palette(text)
-    img = _make_gradient(width, height, top_color, bottom_color)
-    img = _add_vignette(img)
-    img = _add_noise(img, intensity=16)
-
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    img.save(output_path, format="JPEG", quality=90)
-    print(f"Sfondo generato localmente in {output_path}")
-    return output_path
+
+    # Durata minima di sicurezza
+    if duration_seconds <= 0:
+        duration_seconds = 30.0
+
+    bg_image = _pick_background_image()
+
+    try:
+        if bg_image is not None:
+            # Effetto Ken Burns (zoom lento) sull'immagine scelta
+            zoom_filter = (
+                "zoompan="
+                "z='min(zoom+0.0015,1.25)':"
+                "x='iw/2-(iw/zoom/2)':"
+                "y='ih/2-(ih/zoom/2)',"
+                f"scale={width}:{height},"
+                "format=yuv420p"
+            )
+
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-loop",
+                "1",
+                "-i",
+                str(bg_image),
+                "-vf",
+                zoom_filter,
+                "-t",
+                f"{duration_seconds:.3f}",
+                "-r",
+                str(fps),
+                "-an",
+                str(output_path),
+            ]
+            print("[Monday][bg] Genero background procedurale da immagine...")
+        else:
+            # Sorgente sintetica: semplice colore (garantito che funzioni ovunque)
+            color = random.choice(
+                ["#05070b", "#080017", "#101820", "#111111", "#1a0b24"]
+            )
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                f"color=c={color}:s={width}x{height}:d={duration_seconds:.3f}",
+                "-vf",
+                "format=yuv420p",
+                "-r",
+                str(fps),
+                "-an",
+                str(output_path),
+            ]
+            print(f"[Monday][bg] Genero background procedurale di colore {color}...")
+
+        print("[Monday][bg] Comando background:", " ".join(cmd))
+        subprocess.run(cmd, check=True)
+        print(f"[Monday][bg] Background generato: {output_path}")
+        return str(output_path)
+    except subprocess.CalledProcessError as e:  # noqa: BLE001
+        print("[Monday][bg] ERRORE durante la generazione del background.")
+        print(f"[Monday][bg] Dettagli: {e}")
+        return None
