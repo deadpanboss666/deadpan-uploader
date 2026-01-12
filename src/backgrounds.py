@@ -1,5 +1,5 @@
 # backgrounds.py — Monday
-# Generazione automatica di background verticali procedurali con ffmpeg
+# Generazione automatica di background verticali robusti per ffmpeg
 
 from __future__ import annotations
 
@@ -46,36 +46,39 @@ def get_media_duration(path: str | Path) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Background procedurale
+# Palette e utility
 # ---------------------------------------------------------------------------
 
 
-def _random_background_params() -> dict:
-    """
-    Genera un set di parametri random per rendere ogni background diverso
-    ma sempre coerente con l'estetica dark / horror.
-    """
-    seed = random.randint(0, 999_999)
+def _to_ffmpeg_color(hex_color: str) -> str:
+    """Converte '#1f2933' in '0x1f2933' per ffmpeg."""
+    hex_color = hex_color.strip().lstrip("#")
+    return f"0x{hex_color}"
 
-    params = {
-        "noise_strength": random.randint(10, 18),
-        "contrast": round(random.uniform(1.2, 1.6), 2),
-        "brightness": round(random.uniform(-0.10, 0.03), 2),
-        "saturation": round(random.uniform(0.6, 1.0), 2),
-        "vignette": round(random.uniform(0.6, 0.9), 2),
-        "seed": seed,
-    }
 
-    print(
-        "[Monday/backgrounds] Parametri sfondo -> "
-        f"noise={params['noise_strength']}, "
-        f"contrast={params['contrast']}, "
-        f"brightness={params['brightness']}, "
-        f"saturation={params['saturation']}, "
-        f"vignette={params['vignette']}, "
-        f"seed={params['seed']}"
-    )
-    return params
+def _random_palette() -> tuple[str, str]:
+    """
+    Ritorna (base_color, overlay_color) in esadecimale,
+    scelti da una piccola palette dark / horror.
+    """
+    palettes = [
+        ("#020617", "#0f172a"),
+        ("#020617", "#1e293b"),
+        ("#030712", "#111827"),
+        ("#020617", "#450a0a"),
+        ("#020617", "#1f2933"),
+        ("#050816", "#4b1d3f"),
+    ]
+    base_hex, overlay_hex = random.choice(palettes)
+    base = _to_ffmpeg_color(base_hex)
+    overlay = _to_ffmpeg_color(overlay_hex)
+    print(f"[Monday/backgrounds] Palette scelta: {base_hex} (base) -> {overlay_hex} (overlay)")
+    return base, overlay
+
+
+# ---------------------------------------------------------------------------
+# Background procedurale (safe)
+# ---------------------------------------------------------------------------
 
 
 def generate_procedural_background(
@@ -84,13 +87,10 @@ def generate_procedural_background(
 ) -> Path:
     """
     Genera un video 1080x1920 vertical, 30 fps, con:
-      - base nera
-      - noise animato
-      - correzione colore (eq)
-      - vignetta
-
-    Tutti i parametri principali sono randomizzati ad ogni run per
-    ottenere variazioni automatiche tra uno short e l'altro.
+      - colore di base scuro
+      - fascia centrale semi-trasparente (drawbox) come overlay
+    Se il filtro drawbox dovesse fallire sul runner, viene usato
+    un fallback a colore pieno, così la pipeline non salta mai.
     """
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -99,26 +99,22 @@ def generate_procedural_background(
     else:
         output_path = Path(output_path)
 
-    params = _random_background_params()
+    base_color, overlay_color = _random_palette()
 
-    # Filtro video: formato, noise animato, eq, vignetta
+    # Filtro video "ricco": formato + drawbox centrale (per profondità)
     vf_filter = (
         "format=yuv420p,"
-        f"noise=alls={params['noise_strength']}:allf=t+u:seed={params['seed']},"
-        f"eq=contrast={params['contrast']}:brightness={params['brightness']}:"
-        f"saturation={params['saturation']},"
-        f"vignette=PI/4:{params['vignette']}"
+        f"drawbox=x=0:y=ih*0.15:w=iw:h=ih*0.7:color={overlay_color}@0.35:t=fill"
     )
 
-    # Input: sorgente lavfi "color" (base nera)
-    # NOTA: niente filtro 'gradient' perché non è garantito su tutti i build ffmpeg.
-    cmd = [
+    # Comando principale: sorgente lavfi "color"
+    cmd_rich = [
         "ffmpeg",
         "-y",
         "-f",
         "lavfi",
         "-i",
-        "color=c=black:s=1080x1920:r=30",
+        f"color=c={base_color}:s=1080x1920:r=30",
         "-vf",
         vf_filter,
         "-t",
@@ -126,15 +122,32 @@ def generate_procedural_background(
         str(output_path),
     ]
 
-    print("[Monday/backgrounds] Genero sfondo procedurale...")
-    print("[Monday/backgrounds] Comando:", " ".join(cmd))
+    print("[Monday/backgrounds] Genero sfondo procedurale (rich)...")
+    print("[Monday/backgrounds] Comando:", " ".join(cmd_rich))
 
     try:
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd_rich, check=True)
+        print(f"[Monday/backgrounds] Sfondo generato (rich): {output_path}")
+        return output_path
     except subprocess.CalledProcessError as e:  # noqa: BLE001
-        print("[Monday/backgrounds] ERRORE durante la generazione dello sfondo procedurale.")
-        print(f"[Monday/backgrounds] Dettagli: {e}")
-        raise
+        print("[Monday/backgrounds] ERRORE nel filtro avanzato. Dettagli:")
+        print(f"[Monday/backgrounds] {e}")
+        print("[Monday/backgrounds] Fallback a colore pieno semplice.")
 
-    print(f"[Monday/backgrounds] Sfondo generato: {output_path}")
+    # Fallback ultra-semplice: solo colore pieno, nessun filtro extra
+    cmd_fallback = [
+        "ffmpeg",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        f"color=c={base_color}:s=1080x1920:r=30",
+        "-t",
+        f"{duration_s:.2f}",
+        str(output_path),
+    ]
+
+    print("[Monday/backgrounds] Comando fallback:", " ".join(cmd_fallback))
+    subprocess.run(cmd_fallback, check=True)
+    print(f"[Monday/backgrounds] Sfondo generato (fallback): {output_path}")
     return output_path
