@@ -25,7 +25,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 BASE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = BASE_DIR.parent
 
-# File OAuth (quelli che abbiamo anche in Base64 nei secrets GitHub)
+# File OAuth
 CLIENT_SECRET_FILE = BASE_DIR / "client_secret.json"
 TOKEN_FILE = BASE_DIR / "token.json"
 
@@ -39,11 +39,7 @@ SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 
 
 def _get_oauth_credentials() -> Credentials:
-    """Carica le credenziali OAuth da token.json, eventualmente le refresh-a.
-
-    - In locale, se token.json non esiste, avvia il flusso OAuth nel browser.
-    - Su GitHub Actions ci aspettiamo che token.json esista già.
-    """
+    """Carica le credenziali OAuth da token.json, eventualmente le refresh-a."""
     creds: Optional[Credentials] = None
 
     if TOKEN_FILE.exists():
@@ -53,10 +49,7 @@ def _get_oauth_credentials() -> Credentials:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                str(CLIENT_SECRET_FILE),
-                SCOPES,
-            )
+            flow = InstalledAppFlow.from_client_secrets_file(str(CLIENT_SECRET_FILE), SCOPES)
             creds = flow.run_local_server(port=0)
 
         TOKEN_FILE.write_text(creds.to_json(), encoding="utf-8")
@@ -167,337 +160,338 @@ def upload_video(
 
 
 # ---------------------------------------------------------------------------
-# GENERAZIONE TESTO (SCRIPT) DEADPAN FILES — VERSIONE ANTI-RIPETIZIONE
+# GENERAZIONE TESTO (SCRIPT) DEADPAN FILES — "VITA NATURAL DURANTE"
 # ---------------------------------------------------------------------------
 
 
 def generate_script():
     """
-    Genera una micro-storia in stile horror / true crime per Deadpan Files
-    e restituisce:
-      - script completo (per voce + sottotitoli)
-      - title (ottimizzato per CTR)
-      - description (2–3 righe con hook)
-      - tags (lista di keyword)
+    Obiettivo: storie SEMPRE diverse, senza intervento umano:
+    - spazio combinatorio enorme (procedurale)
+    - 12+ strutture diverse (non template fisso)
+    - dettagli variabili (nomi, luoghi, prove, contraddizioni, conseguenze)
+    - output breve e ritmato (TTS + sottotitoli)
     """
-    import json
+    import hashlib
     import os
     import random
+    import textwrap
     from datetime import datetime, timezone
 
-    build_dir = ROOT_DIR / "build"
-    build_dir.mkdir(parents=True, exist_ok=True)
-    history_path = build_dir / "history.json"
-
-    def load_history() -> dict:
-        if history_path.exists():
-            try:
-                return json.loads(history_path.read_text(encoding="utf-8"))
-            except Exception:
-                return {}
-        return {}
-
-    def save_history(h: dict) -> None:
-        try:
-            history_path.write_text(json.dumps(h, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception:
-            pass
-
-    history = load_history()
-    used = history.get("used", {})
-    if not isinstance(used, dict):
-        used = {}
-
-    def remember(key: str, value: str, keep_last: int = 20) -> None:
-        arr = used.get(key, [])
-        if not isinstance(arr, list):
-            arr = []
-        arr.append(value)
-        # keep last N
-        arr = arr[-keep_last:]
-        used[key] = arr
-
-    def recently_used(key: str, value: str) -> bool:
-        arr = used.get(key, [])
-        if not isinstance(arr, list):
-            return False
-        return value in arr
-
-    # RNG: seed “forte” (diverso ogni run) + stabile abbastanza
-    now = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    seed_material = f"{now}-{os.getpid()}-{os.urandom(8).hex()}"
-    rng = random.Random(seed_material)
+    # Seed unico per ogni run (time + entropy). Non dipende dalla memoria tra run.
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    entropy = os.urandom(16).hex()
+    seed_material = f"{stamp}-{entropy}-{os.getpid()}"
+    seed = int(hashlib.sha256(seed_material.encode("utf-8")).hexdigest()[:16], 16)
+    rng = random.Random(seed)
 
     # ----------------------------
-    # BANCA VARIANTI (grande)
+    # VOCABOLARI (procedurali)
     # ----------------------------
-    themes = [
-        "cold_case", "found_footage", "dispatch_log", "missing_person", "evidence_tape",
-        "crime_scene_photo", "hospital_cctv", "abandoned_building", "anonymous_tip",
-        "phone_records", "archived_memo", "transcript"
-    ]
-
-    locations = [
-        "a shuttered train station", "a coastal motel", "a basement evidence room",
-        "an old hospital wing", "a quiet cul-de-sac", "a rural bus stop",
-        "a parking garage level B3", "a paper mill outside town", "a derelict cinema",
-        "a storage unit on the edge of the city", "a public library after hours",
-        "a forest service road marked as 'closed'"
-    ]
-
     agencies = [
-        "Missing Persons Unit", "Records Division", "Evidence Control", "Night Dispatch",
-        "Internal Affairs", "County Forensics", "Transit Police", "Hospital Security"
+        "Records Division", "Missing Persons Unit", "Evidence Control", "Night Dispatch",
+        "County Forensics", "Transit Police", "Hospital Security", "Incident Review Board",
+        "Cold Case Taskforce", "Internal Affairs", "Property & Storage", "Audio Lab"
     ]
 
-    objects = [
-        "a cassette tape", "a burned CD", "a disposable camera", "a pager",
-        "a keycard", "a motel receipt", "a voicemail transcript", "a police radio log",
-        "a memory card", "a map with one street circled", "a lab report", "a coroner’s note"
+    place_types = [
+        "motel", "train station", "hospital wing", "parking garage", "storage unit",
+        "public library", "paper mill", "cinema", "subway platform", "riverside trail",
+        "weather station", "county archive", "old courthouse", "service tunnel"
+    ]
+    place_adjs = [
+        "shuttered", "abandoned", "flooded", "sealed", "renovated", "quiet", "condemned",
+        "temporary", "off-limits", "unfinished", "unmarked", "windowless", "underground"
+    ]
+    neighborhoods = [
+        "north side", "east district", "old town", "industrial strip", "coastal road",
+        "rural outskirts", "downtown grid", "hillside blocks", "harbor line", "factory row"
     ]
 
-    hooks = [
-        "Case file {code} was sealed for a reason.",
-        "They closed the report in {days} days. The evidence didn’t agree.",
-        "The call came from a number that hasn’t existed since {year}.",
-        "The footage is clean—until the last {seconds} seconds.",
-        "We found the item in {place}. It shouldn’t have been there.",
-        "The witness statement is short. The silence around it is not.",
-        "The family asked for one thing: don’t play the tape.",
-        "The report says 'no suspects'. The audio says otherwise.",
-        "The time of death is listed as {time}. The camera timestamp disagrees.",
-        "The building has been empty since {year}. Someone kept logging in."
+    evidence_items = [
+        "cassette tape", "burned CD", "memory card", "disposable camera", "keycard",
+        "voicemail transcript", "radio log", "lab report", "polaroid", "door access record",
+        "evidence bag", "handwritten note", "pager", "receipt", "security export"
+    ]
+    evidence_verbs = [
+        "was tagged", "was sealed", "was logged", "was duplicated", "was misfiled",
+        "was re-labeled", "was re-sealed", "was transferred", "was archived", "was destroyed"
     ]
 
-    evidence_lines = [
-        "The {obj} was tagged and archived under {agency}. Then it vanished from the shelf.",
-        "Every photo from the scene shows the same detail: a shadow where no object exists.",
-        "The victim’s phone placed {count} calls after the official time of death.",
-        "The tape contains {mins} minutes of silence, except for breathing—right behind the mic.",
-        "The lab report lists fingerprints that match no database entry… but match each other perfectly.",
-        "Dispatch recorded a voice on the line. No one was speaking.",
-        "The door log shows a keycard swipe at {time}. The camera shows nobody entering.",
-        "A neighbor reported screams. The audio file contains only footsteps approaching the recorder."
+    anomalies = [
+        "a shadow with no source", "a timestamp that goes backwards", "breathing behind the mic",
+        "footsteps approaching the recorder", "a second voice that never speaks again",
+        "a reflection that shows another room", "a door that opens on a closed corridor",
+        "a name that shouldn’t exist", "a camera angle from impossible distance",
+        "a fingerprint set that matches itself", "a file created tomorrow", "a call from a dead number"
     ]
 
-    escalation_lines = [
-        "When we enhanced the audio, the background noise spelled something out—slowly.",
-        "The timeline breaks in one place, like a frame was removed by hand.",
-        "The same name appears in three unrelated cases, each in a different decade.",
-        "The victim’s handwriting shows up on a note written after they disappeared.",
-        "The security guard quit the next morning and refused to explain why.",
-        "The evidence bag was re-sealed with fresh tape—dated the following week."
+    contradictions = [
+        "the report says one thing, the evidence says another",
+        "the timeline breaks in one place",
+        "every witness agrees—on the wrong detail",
+        "the photo doesn’t match the room",
+        "the audio contains no voices, only proximity",
+        "the access log shows entry, the camera shows nobody",
+        "the signature belongs to someone not on payroll",
+        "the file hash matches an older case, perfectly",
+        "the printout is dated next week",
+        "the metadata lists a device that was never manufactured"
     ]
 
-    twists = [
-        "The final frame shows the victim staring straight into the lens… filmed from behind their own back.",
-        "The whisper wasn’t a word. It was a date—tomorrow.",
-        "The calls weren’t coming from the victim. They were coming from the evidence room.",
-        "The suspect sketch matched a person who died in another country years earlier.",
-        "The tape ends with a click—and a second voice saying, 'We’re not done.'",
-        "The report was signed by an officer who never existed on payroll records.",
-        "The keycard belongs to a patient who was discharged {years} years ago.",
-        "The last line in the transcript isn’t spoken. It’s addressed to us."
+    consequences = [
+        "the officer requested a transfer at sunrise",
+        "the guard quit without notice",
+        "the family received letters addressed to the missing person",
+        "the evidence room was re-locked and re-numbered",
+        "the entire shift was reassigned",
+        "the archive clerk stopped coming to work",
+        "the station closed early, once, and never explained why",
+        "the case number was sealed again—under a new label",
+        "the tape was returned with fresh fingerprints",
+        "the report vanished from the system overnight"
     ]
 
-    endings = [
-        "The case was archived again. Two weeks later, the same {obj} showed up in a new locker.",
-        "They told the family it was over. The family still hears the voicemail every night.",
-        "We requested the original footage. What we received was a file created tomorrow.",
-        "Officially, nothing happened at {place}. Unofficially, nobody works that shift anymore.",
-        "When we tried to log it, the system auto-filled the next case number—before we created it."
+    tones = [
+        "clinical", "confessional", "dispatch", "memo", "transcript", "casefile",
+        "foundfootage", "forensics", "redacted", "afteraction", "catalog", "witness"
     ]
 
     ctas = [
-        "If you want the next file, follow Deadpan Files. We’re opening another box tonight.",
-        "Follow Deadpan Files. The next case has a name you’ll recognize.",
-        "More case files are waiting. Follow—before they disappear again.",
-        "Follow Deadpan Files for more archived horror. Next file drops soon.",
-        "If this felt wrong, it’s because it is. Follow Deadpan Files for the next report."
+        "Follow Deadpan Files. Another box is waiting.",
+        "Follow Deadpan Files. The next file has your city in it.",
+        "Follow Deadpan Files. This wasn’t the last recording.",
+        "Follow Deadpan Files. The next case starts with a name you’ll recognize.",
+        "Follow Deadpan Files. We’re opening the next drawer tonight.",
+        "Follow Deadpan Files for more archived horror."
     ]
 
-    # titoli: molti pattern, non 5 sempre uguali
+    # nomi procedurali (combinazione enorme)
+    first_names = [
+        "Evan", "Noah", "Mason", "Liam", "Caleb", "Lucas", "Aiden", "Owen", "Miles", "Nate",
+        "Hannah", "Maya", "Ava", "Nina", "Claire", "Elena", "Lena", "Sofia", "Iris", "June"
+    ]
+    last_names = [
+        "Harper", "Caldwell", "Reyes", "Bennett", "Hughes", "Moreno", "Sullivan", "Park",
+        "Fletcher", "Sinclair", "Rowe", "Keller", "Vaughn", "Pierce", "Donovan", "Hale"
+    ]
+
+    def pick(pool: list[str]) -> str:
+        return rng.choice(pool)
+
+    def make_case_code() -> str:
+        return f"{rng.randint(1, 99):02d}-{rng.randint(1, 28):02d}-{rng.randint(10, 99)}"
+
+    def make_year() -> int:
+        return rng.choice([1987, 1991, 1994, 1998, 2001, 2006, 2011, 2016, 2019, 2021])
+
+    def make_time() -> str:
+        return f"{rng.randint(0, 4):02d}:{rng.choice([13, 17, 22, 31, 44, 58]):02d}"
+
+    def make_place() -> str:
+        return f"a {pick(place_adjs)} {pick(place_types)} on the {pick(neighborhoods)}"
+
+    def make_person() -> str:
+        return f"{pick(first_names)} {pick(last_names)}"
+
+    def tighten(s: str, max_len: int = 140) -> str:
+        s = " ".join(s.replace("—", ". ").replace("…", "...").split())
+        if len(s) <= max_len:
+            return s
+        return textwrap.shorten(s, width=max_len, placeholder="...")
+
+    # ----------------------------
+    # COSTRUZIONE “FATTI”
+    # ----------------------------
+    agency = pick(agencies)
+    case_code = make_case_code()
+    year = make_year()
+    t = make_time()
+    place = make_place()
+    item = pick(evidence_items)
+    anomaly = pick(anomalies)
+    contradiction = pick(contradictions)
+    consequence = pick(consequences)
+    person = make_person()
+
+    # Hook: 2 frasi, sempre variabili
+    hook_patterns = [
+        "Case file {code} was sealed in {year}. It still keeps changing.",
+        "They archived {code} under {agency}. The metadata rewrote itself.",
+        "The call log says {t}. The recording begins before we answered.",
+        "We found a {item} in {place}. It was already labeled with our case number.",
+        "The report lists {person} as a witness. {person} died in {year}.",
+        "Footage from {place} is clean—until the last ten seconds."
+    ]
+    hook = tighten(pick(hook_patterns).format(
+        code=case_code, year=year, agency=agency, t=t, item=item, place=place, person=person
+    ), 170)
+
+    # “Evidence beat” e “Escalation beat”
+    evidence_patterns = [
+        "The {item} {verb} and stored under {agency}. Then it moved shelves by itself.",
+        "Every frame shows {anomaly}. The room has no object that could cast it.",
+        "The access log shows a keycard swipe at {t}. The camera shows nobody entering.",
+        "The audio contains only {anomaly}. No words. No voices. Just proximity.",
+        "The phone placed seven calls after the official time of death. Same number. Same ring."
+    ]
+    evidence = tighten(pick(evidence_patterns).format(
+        item=item, verb=pick(evidence_verbs), agency=agency, anomaly=anomaly, t=t
+    ), 190)
+
+    escalation_patterns = [
+        "We checked again. {contradiction}.",
+        "Forensics flagged the file. {contradiction}.",
+        "When we enhanced the audio, the noise shaped into a second rhythm.",
+        "The timeline doesn’t drift. It snaps.",
+        "The case appears in another archive—same hash, different year.",
+    ]
+    escalation = tighten(pick(escalation_patterns).format(contradiction=contradiction), 170)
+
+    # Twist + ending
+    twist_patterns = [
+        "Then the evidence did something it can’t do: it addressed us by name.",
+        "The last frame shows the victim looking into the lens—filmed from behind.",
+        "The whisper wasn’t a word. It was a date—tomorrow.",
+        "The calls weren’t from the victim. They were from the evidence room.",
+        "The signature belongs to an officer who never existed on payroll.",
+        "The file’s creation date is tomorrow. We verified the server clock.",
+    ]
+    twist = tighten(pick(twist_patterns), 170)
+
+    end_patterns = [
+        "At sunrise, {consequence}.",
+        "By morning, {consequence}.",
+        "After we logged it, {consequence}.",
+        "We sealed the drawer again. Two days later, the label changed.",
+        "We requested the original export. What we received was shorter—missing one second."
+    ]
+    ending = tighten(pick(end_patterns).format(consequence=consequence), 190)
+
+    cta = pick(ctas)
+
+    # ----------------------------
+    # 12 STRUTTURE DIVERSE
+    # ----------------------------
+    formats = []
+
+    formats.append(f"{hook} {evidence} {escalation} {twist} {ending} {cta}")
+
+    formats.append(
+        f"Night dispatch log — {agency}. {hook} "
+        f"Unit reports activity at {place}. {evidence} {twist} {ending} {cta}"
+    )
+
+    formats.append(
+        f"Transcript excerpt — case {case_code}. {hook} "
+        f"{evidence} {escalation} {twist} {cta}"
+    )
+
+    formats.append(
+        f"Archived memo from {agency}. Subject: {place}. "
+        f"{hook} {evidence} {ending} {cta}"
+    )
+
+    formats.append(
+        f"Found footage note. Seized item: {item}. Location: {place}. "
+        f"{hook} {evidence} {twist} {cta}"
+    )
+
+    formats.append(
+        f"Evidence catalog entry {case_code}. {item} — status: sealed. "
+        f"{hook} {escalation} {twist} {ending} {cta}"
+    )
+
+    formats.append(
+        f"Witness statement: {person}. {hook} "
+        f"{evidence} {twist} {ending} {cta}"
+    )
+
+    formats.append(
+        f"Forensics addendum. {hook} "
+        f"Anomaly observed: {anomaly}. {escalation} {twist} {cta}"
+    )
+
+    formats.append(
+        f"Redacted report. {hook} "
+        f"{evidence} [REDACTED]. {twist} {ending} {cta}"
+    )
+
+    formats.append(
+        f"After-action summary. {hook} "
+        f"{escalation} Outcome: {ending} {cta}"
+    )
+
+    formats.append(
+        f"Audio lab note. {hook} "
+        f"Source artifact: {item}. {evidence} {twist} {cta}"
+    )
+
+    formats.append(
+        f"Cold case brief. {hook} "
+        f"Primary contradiction: {contradiction}. {twist} {ending} {cta}"
+    )
+
+    # Scegli formato e “ripulisci” per TTS
+    script = pick(formats)
+    script = " ".join(script.replace("—", ". ").replace("…", "...").split()).strip()
+
+    # ----------------------------
+    # TITOLI: tantissimi pattern + variabili
+    # ----------------------------
     title_patterns = [
-        "The {obj} They Never Logged In",
-        "The Case File They Tried To Seal",
-        "The Footage That Shouldn’t Exist",
-        "A Call From {year}",
+        "The {item} That Rewrote The Case",
+        "The Case File That Kept Changing",
+        "The Footage From {place_type}",
+        "The Call From A Dead Number",
         "The Evidence Room Incident",
-        "The Transcript With A Missing Line",
-        "The Night Dispatch Won’t Mention",
-        "The Photo That Doesn’t Match Reality",
-        "The Number That Kept Calling Back",
-        "The Report Signed By Nobody"
+        "The Transcript With One Missing Second",
+        "The Night Dispatch Log They Won’t Explain",
+        "The Timestamp That Went Backwards",
+        "The Report Signed By Nobody",
+        "The Tape That Knew Tomorrow"
     ]
-
-    # helper: pick evitando ripetizioni recenti
-    def pick(key: str, pool: List[str], max_tries: int = 30) -> str:
-        choice = rng.choice(pool)
-        tries = 0
-        while recently_used(key, choice) and tries < max_tries:
-            choice = rng.choice(pool)
-            tries += 1
-        remember(key, choice)
-        return choice
-
-    # variabili per riempire template
-    code = f"{rng.randint(1, 99):02d}-{rng.randint(1, 28):02d}"
-    days = rng.choice([1, 2, 3, 5, 7, 9])
-    year = rng.choice([1991, 1994, 1998, 2001, 2006, 2011, 2016])
-    seconds = rng.choice([7, 9, 11, 13, 17, 19])
-    mins = rng.choice([12, 18, 20, 23, 27])
-    place = pick("place", locations)
-    agency = pick("agency", agencies)
-    obj = pick("obj", objects)
-    count = rng.choice([3, 5, 7, 11, 12, 14])
-    time = rng.choice(["02:13", "03:07", "01:44", "04:22", "00:58"])
-    years = rng.choice([7, 11, 14, 19, 23])
-
-    theme = pick("theme", themes)
-
-    # ----------------------------
-    # STRUTTURE DIVERSE (non template unico)
-    # ----------------------------
-    def render(template: str) -> str:
-        return template.format(
-            code=code,
-            days=days,
-            year=year,
-            seconds=seconds,
-            mins=mins,
-            place=place,
-            agency=agency,
-            obj=obj,
-            count=count,
-            time=time,
-            years=years,
-        )
-
-    hook = render(pick("hook", hooks))
-    ev1 = render(pick("evidence", evidence_lines))
-    esc = render(pick("escalation", escalation_lines))
-    tw = render(pick("twist", twists))
-    end = render(pick("ending", endings))
-    cta = pick("cta", ctas)
-
-    # Template list (scegliamo uno a caso)
-    templates = []
-
-    # 1) Case file classico
-    templates.append(
-        f"{hook} {ev1} {esc} {tw} {end} {cta}"
+    title = pick(title_patterns).format(
+        item=item.title(),
+        place_type=pick(place_types).title(),
     )
+    title = tighten(title, 88)
 
-    # 2) Dispatch log
-    templates.append(
-        f"Night dispatch log, {agency}. "
-        f"At {time}, a caller reported activity at {place}. "
-        f"{ev1} {esc} {tw} {end} {cta}"
-    )
-
-    # 3) Found footage note
-    templates.append(
-        f"We recovered {obj} from {place}. "
-        f"{hook} {ev1} "
-        f"The footage stays normal—until the last {seconds} seconds. "
-        f"{tw} {end} {cta}"
-    )
-
-    # 4) Transcript
-    templates.append(
-        f"Transcript excerpt—case {code}. "
-        f"{hook} {ev1} "
-        f"Then the recording changes. "
-        f"{esc} {tw} {end} {cta}"
-    )
-
-    # 5) Archived memo
-    templates.append(
-        f"Archived memo from {agency}. "
-        f"{hook} "
-        f"Subject: {place}. "
-        f"{ev1} {esc} {tw} {end} {cta}"
-    )
-
-    script = rng.choice(templates)
-
-    # Pulizia per TTS + subtitles: frasi più corte e ritmo migliore
-    # (aggiunge micro-pause, senza esagerare)
-    script = script.replace("—", ". ").replace("…", "...").strip()
-
-    # Titolo: pattern + variabili, anti-ripetizione
-    title = render(pick("title", title_patterns))
-    # Evita titoli troppo lunghi
-    title = title.strip()
-    if len(title) > 88:
-        title = title[:88].rstrip()
-
-    # Descrizione: hook + contesto + CTA breve (variabile)
-    desc_lines = [
+    # Descrizione: breve, “seriale”, monetizzabile
+    description = "\n".join([
         hook,
-        render(ev1),
-        render(tw),
+        evidence,
+        twist,
         "",
-        "Deadpan Files — short true crime / horror case file.",
-        "New file drops automatically. Follow for the next report."
-    ]
-    description = "\n".join(desc_lines)
+        "Deadpan Files — short true crime / horror case files.",
+        "New files drop automatically. Follow for the next report."
+    ])
 
-    # Tags: aggiungiamo variabilità senza roba “rischiosa”
+    # Tags: variabili, ma pulite
     base_tags = [
-        "deadpan files",
-        "true crime",
-        "horror story",
-        "creepy cases",
-        "mystery",
-        "shorts",
-        "case file",
-        "found footage",
-        "unexplained",
+        "deadpan files", "true crime", "horror story", "mystery", "unexplained", "shorts",
+        "case file", "found footage", "evidence", "dispatch log", "creepy", "archived"
     ]
-    theme_tags = {
-        "cold_case": ["cold case", "unsolved"],
-        "found_footage": ["found footage", "cctv"],
-        "dispatch_log": ["police dispatch", "radio log"],
-        "missing_person": ["missing person", "disappearance"],
-        "evidence_tape": ["evidence tape", "audio recording"],
-        "crime_scene_photo": ["crime scene", "evidence"],
-        "hospital_cctv": ["hospital", "security footage"],
-        "abandoned_building": ["abandoned", "urban exploration"],
-        "anonymous_tip": ["anonymous tip", "investigation"],
-        "phone_records": ["phone call", "voicemail"],
-        "archived_memo": ["archived", "classified"],
-        "transcript": ["transcript", "interview"],
-    }
-
-    tags = list(dict.fromkeys(base_tags + theme_tags.get(theme, [])))  # unique preserve order
-    tags = tags[:20]
-
-    # salva history
-    history["used"] = used
-    save_history(history)
+    # aggiungi 2-3 tag dinamici (sempre diversi)
+    dynamic_tags = [
+        item.lower(),
+        pick(place_types),
+        pick(["cctv", "voicemail", "audio tape", "cold case", "case report", "evidence room"]),
+    ]
+    tags = list(dict.fromkeys(base_tags + dynamic_tags))[:20]
 
     return script, title, description, tags
 
 
 # ---------------------------------------------------------------------------
-# SINTESI VOCALE (legacy: gTTS -> WAV 48 kHz MONO, CON CHUNK)
-# NOTA: la pipeline nuova usa tts_timestamps.py, ma lasciamo questa funzione
-# per compatibilità e test locali.
+# SINTESI VOCALE (legacy) — lasciata per compatibilità
 # ---------------------------------------------------------------------------
 
 
 def synth_voice(text, output_path):
     """
-    Genera una traccia audio parlata in inglese usando gTTS.
-
-    Per ridurre gli errori dell'API gTTS:
-    - spezza il testo in chunk più piccoli
-    - genera un MP3 per ogni chunk
-    - concatena tutti gli MP3 con ffmpeg
-    - converte l'MP3 finale in WAV 48 kHz mono
-
-    Inoltre genera il file subtitles.txt usato dal modulo subtitles.py (legacy).
+    Legacy: gTTS a chunk -> WAV 48 kHz mono + subtitles.txt (legacy).
+    La pipeline nuova usa tts_timestamps.py.
     """
     from pathlib import Path as _Path
     from gtts import gTTS
@@ -561,30 +555,20 @@ def synth_voice(text, output_path):
     tmp_mp3 = output_path.with_suffix(".mp3")
 
     cmd_concat = [
-        "ffmpeg",
-        "-y",
-        "-f",
-        "concat",
-        "-safe",
-        "0",
-        "-i",
-        str(concat_list),
-        "-c",
-        "copy",
+        "ffmpeg", "-y",
+        "-f", "concat", "-safe", "0",
+        "-i", str(concat_list),
+        "-c", "copy",
         str(tmp_mp3),
     ]
     print("[Monday/voice] Concateno i chunk audio con ffmpeg...")
     _subprocess.run(cmd_concat, check=True)
 
     cmd_wav = [
-        "ffmpeg",
-        "-y",
-        "-i",
-        str(tmp_mp3),
-        "-ac",
-        "1",
-        "-ar",
-        "48000",
+        "ffmpeg", "-y",
+        "-i", str(tmp_mp3),
+        "-ac", "1",
+        "-ar", "48000",
         str(output_path),
     ]
     print("[Monday/voice] Converto l'audio in WAV 48 kHz mono...")
@@ -607,11 +591,6 @@ def synth_voice(text, output_path):
         pass
 
     print(f"[Monday/voice] Audio finale pronto: {output_path}")
-
-
-# ---------------------------------------------------------------------------
-# TEST MANUALE (opzionale)
-# ---------------------------------------------------------------------------
 
 
 if __name__ == "__main__":
