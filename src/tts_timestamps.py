@@ -29,12 +29,6 @@ def _run(cmd: List[str]) -> str:
 
 
 def split_sentences(text: str, max_chars: int = 110) -> List[str]:
-    """
-    Split robusto in frasi 'punchy' (Shorts):
-    - split su .!? (principale)
-    - se troppo lungo, spezza su ,;:
-    - ultimo fallback: spezza per parole
-    """
     t = re.sub(r"\s+", " ", text).strip()
     if not t:
         return []
@@ -93,16 +87,10 @@ def ffprobe_duration_seconds(media_path: Path) -> float:
         "-of", "default=nw=1:nk=1",
         str(media_path),
     ])
-    try:
-        return float(out)
-    except ValueError:
-        raise RuntimeError(f"ffprobe returned non-float duration for {media_path}: {out}")
+    return float(out)
 
 
 def concat_audio_mp3(inputs: List[Path], output: Path) -> None:
-    """
-    Concat MP3 con concat demuxer (no re-encode).
-    """
     output.parent.mkdir(parents=True, exist_ok=True)
     lst = output.parent / "concat_list.txt"
 
@@ -115,7 +103,7 @@ def concat_audio_mp3(inputs: List[Path], output: Path) -> None:
         "-f", "concat", "-safe", "0",
         "-i", str(lst),
         "-c", "copy",
-        str(output)
+        str(output),
     ])
 
     try:
@@ -158,14 +146,13 @@ def write_ass_subtitles(
     font_size: int = 62,
     margin_l: int = 90,
     margin_r: int = 90,
-    margin_v: int = 150,
+    margin_v: int = 160,  # un filo più su rispetto a prima
 ) -> None:
     """
-    ASS stile Shorts:
-    - testo bianco + outline nero
-    - box semi-trasparente
-    - fade in/out leggero
-    - max 2 righe
+    ASS stile Shorts (premium):
+    - testo bianco + outline nero + box semi-trasparente
+    - fade + pop-in leggero (scala 112% -> 100%) per aumentare leggibilità/attenzione
+    - max 2 righe bilanciate
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -181,10 +168,9 @@ def write_ass_subtitles(
             s += 1
         return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
-    # ASS colors: &HAABBGGRR (AA: alpha, 00 opaque, FF transparent)
-    primary = "&H00FFFFFF"   # bianco
-    outline = "&H00000000"   # nero
-    back = "&H90000000"      # nero semi-trasparente (box)
+    primary = "&H00FFFFFF"
+    outline = "&H00000000"
+    back = "&H90000000"
 
     header = f"""[Script Info]
 ScriptType: v4.00+
@@ -209,7 +195,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
         txt = escape_ass(seg.text)
 
-        # Heuristica 2 righe bilanciate
+        # 2 righe bilanciate
         if len(txt) > 55 and " " in txt:
             words = txt.split(" ")
             mid = len(words) // 2
@@ -224,8 +210,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     best_i = i
             txt = " ".join(words[:best_i]) + r"\N" + " ".join(words[best_i:])
 
-        # fade leggero
-        effect = r"{\fad(120,120)}" + txt
+        # Fade + pop-in (112% -> 100% in 140ms)
+        # \t(...) = transform ASS
+        # \fscx/\fscy = scale %
+        effect = r"{\fad(120,120)\fscx112\fscy112\t(0,140,\fscx100\fscy100)}" + txt
         lines.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{effect}\n")
 
     out_path.write_text("".join(lines), encoding="utf-8")
@@ -237,10 +225,7 @@ def generate_gtts_phrase_audio(
     lang: str = "en",
     tld: str = "com",
 ) -> List[Path]:
-    """
-    Genera un MP3 per frase (gTTS).
-    """
-    from gtts import gTTS  # import locale
+    from gtts import gTTS
 
     out_dir.mkdir(parents=True, exist_ok=True)
     paths: List[Path] = []
@@ -259,13 +244,6 @@ def build_voice_and_subs_from_text(
     lang: str = "en",
     tld: str = "com",
 ) -> Tuple[Path, Path, List[Segment]]:
-    """
-    Helper completo:
-    - split in frasi
-    - gTTS per frase -> MP3
-    - concat -> voice.mp3
-    - timestamps reali -> subtitles.ass
-    """
     phrases = split_sentences(story_text)
     phrase_dir = work_dir / "phrases"
     voice_path = work_dir / "voice.mp3"
