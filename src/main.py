@@ -1,9 +1,10 @@
 # main.py — Monday
-# Pipeline completa: script -> voce gTTS (per-frase) -> sfondo procedurale -> audio mix + loudnorm -> sottotitoli ASS -> upload
+# Pipeline completa: script -> voce gTTS (per-frase) -> sfondo procedurale -> audio mix + loudnorm -> sottotitoli ASS -> upload (opzionale via UPLOAD_YT)
 
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
 from pathlib import Path
 
@@ -25,6 +26,18 @@ def _ensure_dirs() -> None:
     VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _env_truthy(name: str, default: str = "0") -> bool:
+    """
+    Interpreta una env var come booleano.
+    True se valore in {"1","true","yes","y","on"} (case-insensitive).
+    """
+    raw = os.getenv(name, default)
+    if raw is None:
+        raw = default
+    v = str(raw).strip().lower()
+    return v in {"1", "true", "yes", "y", "on"}
+
+
 def _render_video(background_video: Path, voice_audio: Path, duration_s: float, seed: int) -> Path:
     """
     Merge voce + sfondo e migliora audio:
@@ -36,13 +49,10 @@ def _render_video(background_video: Path, voice_audio: Path, duration_s: float, 
 
     raw_video = VIDEOS_DIR / "video_base.mp4"
 
-    # ambience procedurale: scegli "pink" o "brown" in modo deterministico
     ambience_color = "pink" if (seed % 2 == 0) else "brown"
 
-    # Nota: anoisesrc è un generatore audio interno di ffmpeg (nessun file esterno/copyright)
-    # Facciamo un’ambience leggera + echo minimo + filtri + volume basso.
     filter_complex = (
-        # voce: un po' di compressione soft + loudnorm
+        # voce: pulizia + compressione soft + limiter
         "[1:a]"
         "highpass=f=90,"
         "lowpass=f=8000,"
@@ -93,6 +103,10 @@ def _render_video(background_video: Path, voice_audio: Path, duration_s: float, 
 def main() -> None:
     print("[Monday] Avvio pipeline Deadpan completamente automatica...")
 
+    # Toggle upload: default sicuro = NO upload finché non imposti UPLOAD_YT=1
+    do_upload = _env_truthy("UPLOAD_YT", default="0")
+    print(f"[Monday] UPLOAD_YT={os.getenv('UPLOAD_YT')} -> do_upload={do_upload}")
+
     # 1) Script Deadpan Files + metadati YouTube
     script_text, title, description, tags = generate_script()
     print("[Monday] Script generato (preview):", script_text[:140], "...")
@@ -100,7 +114,7 @@ def main() -> None:
 
     _ensure_dirs()
 
-    # Seed unico basato sul testo: aiuta a rendere il look/audio coerente ma diverso per ogni storia
+    # Seed unico basato sul testo
     seed = int(hashlib.md5(script_text.encode("utf-8")).hexdigest()[:8], 16)
     print(f"[Monday] Seed stile video: {seed}")
 
@@ -119,7 +133,7 @@ def main() -> None:
     duration_s = get_media_duration(voice_audio)
     duration_s = min(max(duration_s, 15.0), 45.0)
 
-    # 4) Sfondo procedurale (già variabile col seed)
+    # 4) Sfondo procedurale
     print("[Monday] Genero background procedurale...")
     bg_video = generate_procedural_background(duration_s, seed=seed)
 
@@ -134,14 +148,19 @@ def main() -> None:
         output_dir=VIDEOS_DIR,
     )
 
-    # 7) Upload su YouTube
-    print("[Monday] Preparazione upload...")
-    upload_video(
-        video_path=final_video_path,
-        title=title,
-        description=description,
-        tags=tags,
-    )
+    print(f"[Monday] Video finale pronto: {final_video_path}")
+
+    # 7) Upload su YouTube (opzionale)
+    if do_upload:
+        print("[Monday] Preparazione upload...")
+        upload_video(
+            video_path=final_video_path,
+            title=title,
+            description=description,
+            tags=tags,
+        )
+    else:
+        print("[Monday] UPLOAD disattivato (UPLOAD_YT!=1). Job verde senza upload.")
 
 
 if __name__ == "__main__":
