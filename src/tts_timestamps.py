@@ -28,7 +28,12 @@ def _run(cmd: List[str]) -> str:
     return p.stdout.strip()
 
 
-def split_sentences(text: str, max_chars: int = 110) -> List[str]:
+def split_sentences(text: str, max_chars: int = 78) -> List[str]:
+    """
+    Split "Shorts-ready":
+    - frasi più corte (max_chars basso)
+    - evita righe lunghe che YouTube taglia/impasta
+    """
     t = re.sub(r"\s+", " ", text).strip()
     if not t:
         return []
@@ -143,18 +148,19 @@ def write_ass_subtitles(
     width: int = 1080,
     height: int = 1920,
     font_name: str = "DejaVu Sans",
-    font_size: int = 62,
-    margin_l: int = 90,
-    margin_r: int = 90,
-    margin_v: int = 160,  # un filo più su rispetto a prima
+    font_size: int = 54,
 ) -> None:
     """
-    ASS stile Shorts (premium):
-    - testo bianco + outline nero + box semi-trasparente
-    - fade + pop-in leggero (scala 112% -> 100%) per aumentare leggibilità/attenzione
+    ASS Shorts "pro":
+    - posizionamento FORZATO in lower-third safe (non taglia mai con UI YouTube)
+    - box semi-trasparente + outline nero
     - max 2 righe bilanciate
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # posizione safe: centro X, Y nel lower-third ma sopra la UI
+    pos_x = width // 2
+    pos_y = 1500  # <<< QUI è il punto chiave: alza tutto, sempre visibile
 
     def ts(sec: float) -> str:
         if sec < 0:
@@ -168,9 +174,9 @@ def write_ass_subtitles(
             s += 1
         return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
-    primary = "&H00FFFFFF"
-    outline = "&H00000000"
-    back = "&H90000000"
+    primary = "&H00FFFFFF"   # bianco
+    outline = "&H00000000"   # nero
+    back = "&H90000000"      # box nero semi-trasparente
 
     header = f"""[Script Info]
 ScriptType: v4.00+
@@ -181,7 +187,7 @@ WrapStyle: 2
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{font_name},{font_size},{primary},{primary},{outline},{back},1,0,0,0,100,100,0,0,3,3.2,1.2,2,{margin_l},{margin_r},{margin_v},1
+Style: Default,{font_name},{font_size},{primary},{primary},{outline},{back},1,0,0,0,100,100,0,0,3,3.2,1.2,5,10,10,10,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -196,12 +202,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         txt = escape_ass(seg.text)
 
         # 2 righe bilanciate
-        if len(txt) > 55 and " " in txt:
+        if len(txt) > 52 and " " in txt:
             words = txt.split(" ")
             mid = len(words) // 2
             best_i = mid
             best_score = 10**9
-            for i in range(max(1, mid - 4), min(len(words) - 1, mid + 5)):
+            for i in range(max(1, mid - 5), min(len(words) - 1, mid + 6)):
                 a = " ".join(words[:i])
                 b = " ".join(words[i:])
                 score = abs(len(a) - len(b))
@@ -210,10 +216,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     best_i = i
             txt = " ".join(words[:best_i]) + r"\N" + " ".join(words[best_i:])
 
-        # Fade + pop-in (112% -> 100% in 140ms)
-        # \t(...) = transform ASS
-        # \fscx/\fscy = scale %
-        effect = r"{\fad(120,120)\fscx112\fscy112\t(0,140,\fscx100\fscy100)}" + txt
+        # FORZA posizione + fade + micro-pop
+        # \an5 = anchor center, \pos(x,y) = posizione fissa
+        effect = (
+            fr"{{\an5\pos({pos_x},{pos_y})\fad(120,120)\fscx112\fscy112\t(0,140,\fscx100\fscy100)}}"
+            + txt
+        )
         lines.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{effect}\n")
 
     out_path.write_text("".join(lines), encoding="utf-8")
@@ -229,12 +237,10 @@ def generate_gtts_phrase_audio(
 
     out_dir.mkdir(parents=True, exist_ok=True)
     paths: List[Path] = []
-
     for i, txt in enumerate(phrases):
         p = out_dir / f"phrase_{i:03d}.mp3"
         gTTS(text=txt, lang=lang, tld=tld, slow=False).save(str(p))
         paths.append(p)
-
     return paths
 
 
