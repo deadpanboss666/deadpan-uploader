@@ -4,9 +4,17 @@ on:
   push:
     branches:
       - main
-  # Se in futuro vuoi lo schedule, scommenta queste righe:
-  # schedule:
-  #   - cron: "0 15,19,23 * * *"
+
+  # Lancio manuale (utile per test senza aspettare lo schedule)
+  workflow_dispatch:
+
+  # Schedule 3 volte al giorno (orario "americano")
+  # Nota: GitHub Actions usa CRON in UTC.
+  # Se volevi 15,19,23 UTC come prima, le lasciamo identiche.
+  schedule:
+    - cron: "0 15 * * *"
+    - cron: "0 19 * * *"
+    - cron: "0 23 * * *"
 
 jobs:
   run-pipeline:
@@ -15,6 +23,8 @@ jobs:
     env:
       CLIENT_SECRET_JSON: ${{ secrets.CLIENT_SECRET_JSON }}
       TOKEN_JSON: ${{ secrets.TOKEN_JSON }}
+      # Toggle: 1 = carica su YouTube, 0 = genera soltanto (lo useremo quando vuoi evitare upload)
+      UPLOAD_YT: ${{ vars.UPLOAD_YT }}
 
     steps:
       - name: Checkout repository
