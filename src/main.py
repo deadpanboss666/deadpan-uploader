@@ -1,6 +1,3 @@
-# main.py — Monday
-# Pipeline completa: script -> voce gTTS (per-frase) -> sfondo procedurale -> audio mix + loudnorm -> sottotitoli ASS -> upload (opzionale via UPLOAD_YT)
-
 from __future__ import annotations
 
 import hashlib
@@ -9,12 +6,11 @@ import subprocess
 from pathlib import Path
 
 from uploader import generate_script, upload_video
-from subtitles import add_burned_in_subtitles
 from backgrounds import get_media_duration, generate_procedural_background
+from subtitles import add_burned_in_subtitles
 from tts_timestamps import build_voice_and_subs_from_text
 
 
-# Cartelle principali
 BASE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = BASE_DIR.parent
 BUILD_DIR = ROOT_DIR / "build"
@@ -26,63 +22,22 @@ def _ensure_dirs() -> None:
     VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _env_truthy(name: str, default: str = "0") -> bool:
-    """
-    Interpreta una env var come booleano.
-    True se valore in {"1","true","yes","y","on"} (case-insensitive).
-    """
+def _truthy_env(name: str, default: str = "0") -> bool:
     raw = os.getenv(name, default)
-    if raw is None:
-        raw = default
     v = str(raw).strip().lower()
     return v in {"1", "true", "yes", "y", "on"}
 
 
-def _render_video(background_video: Path, voice_audio: Path, duration_s: float, seed: int) -> Path:
+def _merge_bg_and_audio(bg_video: Path, voice_audio: Path, out_path: Path) -> None:
     """
-    Merge voce + sfondo e migliora audio:
-    - ambience horror generato (anoisesrc) sempre diverso (seed)
-    - mix voce + ambience a basso volume
-    - loudnorm per volume stabile (più pro)
+    Merge video + audio con audio più "pro" (voce centrata, volume stabile).
     """
-    _ensure_dirs()
-
-    raw_video = VIDEOS_DIR / "video_base.mp4"
-
-    ambience_color = "pink" if (seed % 2 == 0) else "brown"
-
-    filter_complex = (
-        # voce: pulizia + compressione soft + limiter
-        "[1:a]"
-        "highpass=f=90,"
-        "lowpass=f=8000,"
-        "acompressor=threshold=-18dB:ratio=3:attack=15:release=140,"
-        "alimiter=limit=0.95,"
-        "volume=1.0"
-        "[voice];"
-
-        # ambience: noise -> filtri -> echo -> volume basso
-        f"anoisesrc=d={duration_s:.3f}:c={ambience_color}:seed={seed}:r=48000,"
-        "highpass=f=120,"
-        "lowpass=f=1600,"
-        "aecho=0.8:0.85:40:0.20,"
-        "volume=0.055"
-        "[amb];"
-
-        # mix + loudnorm finale
-        "[voice][amb]amix=inputs=2:duration=shortest:dropout_transition=0,"
-        "loudnorm=I=-16:LRA=11:TP=-1.5"
-        "[aout]"
-    )
-
     cmd = [
         "ffmpeg",
         "-y",
-        "-i", str(background_video),
+        "-i", str(bg_video),
         "-i", str(voice_audio),
-        "-filter_complex", filter_complex,
-        "-map", "0:v:0",
-        "-map", "[aout]",
+        "-filter:a", "loudnorm=I=-16:LRA=11:TP=-1.5",
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-crf", "18",
@@ -90,77 +45,63 @@ def _render_video(background_video: Path, voice_audio: Path, duration_s: float, 
         "-b:a", "160k",
         "-shortest",
         "-pix_fmt", "yuv420p",
-        str(raw_video),
+        str(out_path),
     ]
-
-    print("[Monday] Genero video base + audio mix (ambience + loudnorm)...")
-    print("[Monday] Comando:", " ".join(cmd))
     subprocess.run(cmd, check=True)
-
-    return raw_video
 
 
 def main() -> None:
-    print("[Monday] Avvio pipeline Deadpan completamente automatica...")
-
-    # Toggle upload: default sicuro = NO upload finché non imposti UPLOAD_YT=1
-    do_upload = _env_truthy("UPLOAD_YT", default="0")
-    print(f"[Monday] UPLOAD_YT={os.getenv('UPLOAD_YT')} -> do_upload={do_upload}")
-
-    # 1) Script Deadpan Files + metadati YouTube
-    script_text, title, description, tags = generate_script()
-    print("[Monday] Script generato (preview):", script_text[:140], "...")
-    print("[Monday] Titolo scelto:", title)
+    print("[Monday] Avvio pipeline Deadpan...")
 
     _ensure_dirs()
 
-    # Seed unico basato sul testo
-    seed = int(hashlib.md5(script_text.encode("utf-8")).hexdigest()[:8], 16)
-    print(f"[Monday] Seed stile video: {seed}")
+    # Upload toggle (per prove: tienilo a 1, ok)
+    do_upload = _truthy_env("UPLOAD_YT", default="0")
+    print(f"[Monday] UPLOAD_YT={os.getenv('UPLOAD_YT')} -> do_upload={do_upload}")
 
-    # 2) Voce + sottotitoli ASS con sync reale (per-frase)
-    print("[Monday] Genero voice.mp3 + subtitles.ass (sync reale)...")
-    voice_audio, subtitles_ass, _segments = build_voice_and_subs_from_text(
+    # 1) Story + metadata
+    script_text, title, description, tags = generate_script()
+    print("[Monday] Titolo:", title)
+
+    # seed deterministico per variazioni forti
+    seed = int(hashlib.md5(script_text.encode("utf-8")).hexdigest()[:8], 16)
+
+    # 2) Voce + ASS sync reale
+    voice_audio, subtitles_ass, _ = build_voice_and_subs_from_text(
         story_text=script_text,
         work_dir=BUILD_DIR,
         lang="en",
         tld="com",
     )
-    print(f"[Monday] Voice: {voice_audio}")
-    print(f"[Monday] Subtitles: {subtitles_ass}")
 
-    # 3) Durata audio → durata sfondo
+    # 3) Background dinamico
     duration_s = get_media_duration(voice_audio)
-    duration_s = min(max(duration_s, 15.0), 45.0)
+    duration_s = min(max(duration_s, 15.0), 60.0)
+    bg_video = generate_procedural_background(duration_s=duration_s, seed=seed)
 
-    # 4) Sfondo procedurale
-    print("[Monday] Genero background procedurale...")
-    bg_video = generate_procedural_background(duration_s, seed=seed)
+    # 4) Merge base
+    base_video = VIDEOS_DIR / "video_base.mp4"
+    _merge_bg_and_audio(bg_video, voice_audio, base_video)
 
-    # 5) Video base (sfondo + voce + ambience + loudnorm)
-    raw_video = _render_video(bg_video, voice_audio, duration_s=duration_s, seed=seed)
-
-    # 6) Sottotitoli bruciati (ASS)
-    print("[Monday] Brucio sottotitoli (ASS) nel video finale...")
-    final_video_path = add_burned_in_subtitles(
-        video_path=raw_video,
+    # 5) Burn subtitles (SAFE DEFINITIVO)
+    final_video = add_burned_in_subtitles(
+        video_path=base_video,
         subtitles_path=subtitles_ass,
         output_dir=VIDEOS_DIR,
+        output_name="video_final.mp4",
     )
+    print("[Monday] Video finale:", final_video)
 
-    print(f"[Monday] Video finale pronto: {final_video_path}")
-
-    # 7) Upload su YouTube (opzionale)
+    # 6) Upload (se attivo)
     if do_upload:
-        print("[Monday] Preparazione upload...")
         upload_video(
-            video_path=final_video_path,
+            video_path=final_video,
             title=title,
             description=description,
             tags=tags,
         )
     else:
-        print("[Monday] UPLOAD disattivato (UPLOAD_YT!=1). Job verde senza upload.")
+        print("[Monday] Upload disattivato: generato solo output locale/Actions.")
 
 
 if __name__ == "__main__":
