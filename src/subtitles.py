@@ -52,36 +52,41 @@ def _ass_filter_path(p: Path) -> str:
 
 def add_burned_in_subtitles(
     video_path: str | Path,
-    subtitles_txt_path: str | Path,   # lo lasciamo per compat firma, ma usiamo ASS se è .ass
-    output_dir: str | Path,
+    subtitles_path: str | Path | None = None,
+    subtitles_txt_path: str | Path | None = None,
+    subtitles_ass_path: str | Path | None = None,
+    output_dir: str | Path = "videos_to_upload",
     output_name: str = "video_final.mp4",
 ) -> Path:
     """
-    Se subtitles_txt_path punta a .ass -> burn con ass=
-    Se punta a .txt/.srt -> prova comunque con subtitles= (fallback)
-    In ogni caso FORZIAMO 1080x1920 + setsar=1 (Shorts)
+    Brucia sottotitoli ASS nel video e forza output 9:16 1080x1920.
+
+    Retro-compat:
+    - main vecchi chiamano subtitles_txt_path=
+    - main nuovi chiamano subtitles_path=
+    - alcuni possono chiamare subtitles_ass_path=
     """
     video_path = Path(video_path)
-    subs_path = Path(subtitles_txt_path)
+
+    # Scegliamo quale path usare (priorità: ASS esplicito -> subtitles_path -> subtitles_txt_path)
+    chosen = subtitles_ass_path or subtitles_path or subtitles_txt_path
+    if not chosen:
+        raise ValueError("Missing subtitles path (use subtitles_path= or subtitles_txt_path= or subtitles_ass_path=)")
+
+    subtitles_file = Path(chosen)
+
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-
     out = output_dir / output_name
 
-    # Forza formato verticale sempre
-    base = (
+    ass_path = _escape_ass_path_for_filter(subtitles_file)
+
+    vf = (
         "scale=1080:1920:force_original_aspect_ratio=decrease,"
         "pad=1080:1920:(ow-iw)/2:(oh-ih)/2,"
-        "setsar=1"
+        "setsar=1,"
+        f"ass='{ass_path}'"
     )
-
-    if subs_path.suffix.lower() == ".ass":
-        subs_filter = f"ass='{_ass_filter_path(subs_path)}'"
-    else:
-        # fallback (non ideale, ma non deve mai crashare)
-        subs_filter = f"subtitles='{_ass_filter_path(subs_path)}'"
-
-    vf = f"{base},{subs_filter}"
 
     cmd = [
         "ffmpeg", "-y",
@@ -95,7 +100,6 @@ def add_burned_in_subtitles(
         "-pix_fmt", "yuv420p",
         str(out),
     ]
-
     print("[Monday] ffmpeg burn subtitles:", " ".join(cmd))
     _run(cmd)
     return out
