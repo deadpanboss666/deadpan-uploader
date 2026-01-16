@@ -28,13 +28,12 @@ def _run(cmd: List[str]) -> str:
     return p.stdout.strip()
 
 
-def split_sentences(text: str, max_chars: int = 78) -> List[str]:
+def split_sentences(text: str, max_chars: int = 74) -> List[str]:
     """
-    Split "Shorts-ready":
-    - frasi più corte (max_chars basso)
-    - evita righe lunghe che YouTube taglia/impasta
+    Shorts-safe: frasi più corte => non taglia ai lati.
+    Split su .!? poi su ,;: poi parole.
     """
-    t = re.sub(r"\s+", " ", text).strip()
+    t = re.sub(r"\s+", " ", (text or "").strip())
     if not t:
         return []
 
@@ -108,7 +107,7 @@ def concat_audio_mp3(inputs: List[Path], output: Path) -> None:
         "-f", "concat", "-safe", "0",
         "-i", str(lst),
         "-c", "copy",
-        str(output),
+        str(output)
     ])
 
     try:
@@ -122,9 +121,6 @@ def build_segments_from_phrase_audio(
     phrase_audio_paths: List[Path],
     gap_seconds: float = 0.06
 ) -> List[Segment]:
-    if len(phrases) != len(phrase_audio_paths):
-        raise ValueError("phrases and phrase_audio_paths must have same length")
-
     t = 0.0
     segs: List[Segment] = []
     for i, (txt, ap) in enumerate(zip(phrases, phrase_audio_paths)):
@@ -148,19 +144,18 @@ def write_ass_subtitles(
     width: int = 1080,
     height: int = 1920,
     font_name: str = "DejaVu Sans",
-    font_size: int = 54,
+    font_size: int = 46,
+    margin_l: int = 140,
+    margin_r: int = 140,
+    margin_v: int = 420,
 ) -> None:
     """
-    ASS Shorts "pro":
-    - posizionamento FORZATO in lower-third safe (non taglia mai con UI YouTube)
-    - box semi-trasparente + outline nero
-    - max 2 righe bilanciate
+    ASS Shorts-safe:
+    - box semi-trasparente
+    - outline forte
+    - margini larghi e alzati (safe zone)
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # posizione safe: centro X, Y nel lower-third ma sopra la UI
-    pos_x = width // 2
-    pos_y = 1500  # <<< QUI è il punto chiave: alza tutto, sempre visibile
 
     def ts(sec: float) -> str:
         if sec < 0:
@@ -174,9 +169,10 @@ def write_ass_subtitles(
             s += 1
         return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
-    primary = "&H00FFFFFF"   # bianco
-    outline = "&H00000000"   # nero
-    back = "&H90000000"      # box nero semi-trasparente
+    # &HAABBGGRR
+    primary = "&H00FFFFFF"
+    outline = "&H00000000"
+    back = "&H90000000"
 
     header = f"""[Script Info]
 ScriptType: v4.00+
@@ -187,22 +183,20 @@ WrapStyle: 2
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{font_name},{font_size},{primary},{primary},{outline},{back},1,0,0,0,100,100,0,0,3,3.2,1.2,5,10,10,10,1
+Style: Default,{font_name},{font_size},{primary},{primary},{outline},{back},1,0,0,0,100,100,0,0,3,4,1.2,2,{margin_l},{margin_r},{margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
-
     lines = [header]
 
     for seg in segments:
         start = ts(seg.start)
         end = ts(seg.end)
-
         txt = escape_ass(seg.text)
 
-        # 2 righe bilanciate
-        if len(txt) > 52 and " " in txt:
+        # max 2 righe bilanciate
+        if len(txt) > 48 and " " in txt:
             words = txt.split(" ")
             mid = len(words) // 2
             best_i = mid
@@ -216,12 +210,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     best_i = i
             txt = " ".join(words[:best_i]) + r"\N" + " ".join(words[best_i:])
 
-        # FORZA posizione + fade + micro-pop
-        # \an5 = anchor center, \pos(x,y) = posizione fissa
-        effect = (
-            fr"{{\an5\pos({pos_x},{pos_y})\fad(120,120)\fscx112\fscy112\t(0,140,\fscx100\fscy100)}}"
-            + txt
-        )
+        effect = r"{\fad(120,120)}" + txt
         lines.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{effect}\n")
 
     out_path.write_text("".join(lines), encoding="utf-8")

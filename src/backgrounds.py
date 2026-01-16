@@ -23,12 +23,12 @@ def _run(cmd: List[str]) -> None:
         )
 
 
-def get_media_duration(path: Path) -> float:
+def get_media_duration(media_path: Path) -> float:
     cmd = [
         "ffprobe", "-v", "error",
         "-show_entries", "format=duration",
         "-of", "default=nw=1:nk=1",
-        str(path),
+        str(media_path),
     ]
     p = subprocess.run(cmd, capture_output=True, text=True)
     if p.returncode != 0:
@@ -36,107 +36,85 @@ def get_media_duration(path: Path) -> float:
     return float(p.stdout.strip())
 
 
-def generate_procedural_background(
-    duration_s: float,
-    seed: Optional[int] = None,
-    width: int = 1080,
-    height: int = 1920,
-    fps: int = 30,
-) -> Path:
-    """
-    Sfondo shorts "premium" e SEMPRE diverso.
-    4 stili random deterministici col seed:
-      0) Mandelbrot fractal cinematic
-      1) Cellular automata + grade
-      2) Gradient + light leaks overlay
-      3) Plasma + motion
-    In tutti i casi: movimento (zoom/pan), grain, vignette.
-    """
+def _style_filter(seed: int) -> str:
+    # variazioni
+    hue_amp = 6 + (seed % 7)            # 6..12
+    sat = 1.25 + ((seed % 35) / 100)    # 1.25..1.60
+    con = 1.12 + ((seed % 25) / 100)    # 1.12..1.37
+    bri = -0.06 + ((seed % 9) / 100)    # -0.06..+0.02
+    noise = 10 + (seed % 14)            # 10..23
+    blur = 3.5 + ((seed % 20) / 10)     # 3.5..5.4
+
+    sx = 28 + (seed % 23)
+    sy = 31 + (seed % 27)
+    z = 1.07 + ((seed % 10) / 100)      # 1.07..1.16
+
+    look = seed % 5
+
+    if look == 0:
+        grade = (
+            f"eq=contrast={con:.3f}:brightness={bri:.3f}:saturation={sat:.3f},"
+            "colorchannelmixer=rr=1.05:rg=0.02:rb=0.02:gr=0.00:gg=0.98:gb=0.02:br=0.00:bg=0.02:bb=0.92"
+        )
+    elif look == 1:
+        grade = (
+            f"eq=contrast={con:.3f}:brightness={bri:.3f}:saturation={sat:.3f},"
+            "colorchannelmixer=rr=0.90:rg=0.02:rb=0.00:gr=0.00:gg=0.98:gb=0.02:br=0.00:bg=0.05:bb=1.08"
+        )
+    elif look == 2:
+        grade = (
+            f"eq=contrast={con:.3f}:brightness={bri:.3f}:saturation={sat:.3f},"
+            "colorchannelmixer=rr=1.10:rg=0.02:rb=0.00:gr=0.00:gg=0.96:gb=0.02:br=0.00:bg=0.02:bb=0.90"
+        )
+    elif look == 3:
+        grade = (
+            f"eq=contrast={con:.3f}:brightness={bri:.3f}:saturation={sat:.3f},"
+            "colorchannelmixer=rr=0.92:rg=0.05:rb=0.00:gr=0.00:gg=1.05:gb=0.00:br=0.00:bg=0.05:bb=0.92"
+        )
+    else:
+        grade = (
+            f"eq=contrast={con:.3f}:brightness={bri:.3f}:saturation=1.10,"
+            "colorchannelmixer=rr=0.98:rg=0.01:rb=0.01:gr=0.01:gg=0.98:gb=0.01:br=0.01:bg=0.01:bb=0.98"
+        )
+
+    hue = f"hue=h='{hue_amp}*sin(2*PI*t/11)'"
+
+    vf = (
+        f"noise=alls={noise}:allf=t+u,"
+        f"gblur=sigma={blur:.2f},"
+        f"{grade},"
+        f"{hue},"
+        "vignette=PI/5,"
+        "unsharp=5:5:0.60:5:5:0.00,"
+        f"zoompan=z='min({z:.3f},1.0+0.00075*on)':"
+        f"x='iw/2-(iw/zoom/2)+sin(on/{sx})*30':"
+        f"y='ih/2-(ih/zoom/2)+cos(on/{sy})*22':"
+        "d=1:fps=30,"
+        "format=yuv420p"
+    )
+    return vf
+
+
+def generate_procedural_background(duration_s: float, seed: Optional[int] = None) -> Path:
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
 
     if seed is None:
-        seed = random.randint(0, 2_000_000_000)
-    rng = random.Random(seed)
+        seed = random.randint(100_000, 999_999)
 
-    out_path = BUILD_DIR / f"bg_{seed:08x}.mp4"
-    if out_path.exists():
-        return out_path
+    out = BUILD_DIR / f"bg_{seed}.mp4"
+    vf = _style_filter(seed)
 
-    style = seed % 4
-
-    crf = rng.choice([18, 19, 20])
-    zoom_max = rng.uniform(1.12, 1.28)
-    blur = rng.uniform(4.0, 10.0)
-    grain = rng.randint(10, 22)
-
-    # grading random (ma coerente)
-    hue = rng.randint(-18, 18)
-    sat = rng.uniform(1.05, 1.45)
-    con = rng.uniform(1.08, 1.28)
-    bri = rng.uniform(-0.06, 0.03)
-
-    # motion (micro camera)
-    motion_x = rng.randint(14, 30)
-    motion_y = rng.randint(18, 36)
-
-    def common_tail() -> str:
-        return (
-            f"noise=alls={grain}:allf=t+u,"
-            f"gblur=sigma={blur:.2f},"
-            f"eq=contrast={con:.3f}:brightness={bri:.3f}:saturation={sat:.3f},"
-            f"hue=h={hue},"
-            f"vignette,"
-            f"zoompan="
-            f"z='min({zoom_max:.3f},1.0+0.0011*on)':"
-            f"x='iw/2-(iw/zoom/2)+sin(on/33)*{motion_x}':"
-            f"y='ih/2-(ih/zoom/2)+cos(on/47)*{motion_y}':"
-            f"d=1:s={width}x{height}:fps={fps},"
-            f"format=yuv420p"
-        )
-
-    if style == 0:
-        start = rng.uniform(0.25, 0.95)
-        end = start * rng.uniform(0.20, 0.55)
-        src = f"mandelbrot=s={width}x{height}:r={fps}:start_scale={start:.5f}:end_scale={end:.5f}:d={duration_s}"
-        vf = common_tail()
-        cmd = ["ffmpeg", "-y", "-f", "lavfi", "-i", src, "-vf", vf,
-               "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf),
-               "-pix_fmt", "yuv420p", str(out_path)]
-        _run(cmd)
-        return out_path
-
-    if style == 1:
-        rule = rng.randint(20, 230)
-        src = f"cellauto=s={width}x{height}:r={fps}:rule={rule}:d={duration_s}"
-        vf = common_tail()
-        cmd = ["ffmpeg", "-y", "-f", "lavfi", "-i", src, "-vf", vf,
-               "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf),
-               "-pix_fmt", "yuv420p", str(out_path)]
-        _run(cmd)
-        return out_path
-
-    if style == 2:
-        col_a = rng.choice(["#070b10", "#09070f", "#071012", "#0b0b12"])
-        col_b = rng.choice(["#2b0a3d", "#0a3d44", "#3d0a0a", "#1a2f5a", "#3a2a0a"])
-        base = f"color=c={col_a}:s={width}x{height}:r={fps}:d={duration_s}"
-        leak = f"color=c={col_b}:s={width}x{height}:r={fps}:d={duration_s}"
-
-        # overlay + tail
-        fc = f"[0:v][1:v]blend=all_mode=overlay:all_opacity=0.30,{common_tail()}"
-        cmd = ["ffmpeg", "-y",
-               "-f", "lavfi", "-i", base,
-               "-f", "lavfi", "-i", leak,
-               "-filter_complex", fc,
-               "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf),
-               "-pix_fmt", "yuv420p", str(out_path)]
-        _run(cmd)
-        return out_path
-
-    # style 3: plasma
-    src = f"plasma=s={width}x{height}:r={fps}:d={duration_s}"
-    vf = common_tail()
-    cmd = ["ffmpeg", "-y", "-f", "lavfi", "-i", src, "-vf", vf,
-           "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf),
-           "-pix_fmt", "yuv420p", str(out_path)]
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "lavfi",
+        "-i", f"color=c=black:s=1080x1920:r=30:d={duration_s:.3f}",
+        "-vf", vf,
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "18",
+        "-pix_fmt", "yuv420p",
+        str(out),
+    ]
     _run(cmd)
-    return out_path
+    print(f"[Monday/backgrounds] Background generato: {out}")
+    return out
