@@ -32,10 +32,8 @@ def _ffmpeg_escape_subtitles_path(p: Path) -> str:
     - escape di eventuali apostrofi
     """
     s = p.resolve().as_posix()  # C:/Users/...
-    # escape drive colon: "C:/..." -> "C\:/..."
     if len(s) >= 2 and s[1] == ":":
         s = s[0] + r"\:" + s[2:]
-    # escape apostrofi per sicurezza
     s = s.replace("'", r"\'")
     return s
 
@@ -51,12 +49,15 @@ def add_burned_in_subtitles(
 ) -> Path:
     """
     Brucia DAVVERO i sottotitoli ASS con il filtro 'subtitles' (libass).
-    Compatibile anche se il chiamante passa subtitles_path / subtitles_file.
+    Stile "cinematic":
+    - off-white (non bianco sparato)
+    - stroke più spesso
+    - box semitrasparente pulito
+    - margini safe per evitare tagli
     """
     if output_dir is None:
         output_dir = video_path.parent
 
-    # compat: accetta 3 nomi possibili
     subs_path = subtitles_ass_path or subtitles_path or subtitles_file
     if subs_path is None:
         raise ValueError("Missing subtitles path (subtitles_ass_path / subtitles_path / subtitles_file)")
@@ -66,25 +67,25 @@ def add_burned_in_subtitles(
 
     subs = _ffmpeg_escape_subtitles_path(Path(subs_path))
 
-    # ✅ colori SENZA '&' finale (più stabile nel parsing)
+    # ASS colors are &HAABBGGRR
+    # PrimaryColour: off-white (F2F2F2), OutlineColour: black, BackColour: semi-transparent black
     force_style = (
         "FontName=DejaVu Sans,"
-        "Fontsize=58,"
+        "Fontsize=54,"
         "Bold=1,"
-        "Outline=3,"
-        "Shadow=1,"
+        "Outline=5,"
+        "Shadow=2,"
         "BorderStyle=3,"
-        "BackColour=&H90000000,"
+        "BackColour=&H7A000000,"
         "OutlineColour=&H00000000,"
-        "PrimaryColour=&H00FFFFFF,"
+        "PrimaryColour=&H00F2F2F2,"
         "Alignment=2,"
-        "MarginV=170,"
+        "WrapStyle=2,"
+        "MarginV=230,"
         "MarginL=90,"
         "MarginR=90"
     )
 
-    # ✅ NIENTE filename='C:/...' (che spesso spacca su Windows)
-    # ✅ usiamo direttamente subtitles=<path_escaped>
     vf = f"subtitles='{subs}':force_style='{force_style}'"
 
     _run([
@@ -97,6 +98,7 @@ def add_burned_in_subtitles(
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
         "-b:a", "128k",
+        "-movflags", "+faststart",
         str(out_path),
     ])
 
