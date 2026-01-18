@@ -1,9 +1,9 @@
-"""
+﻿"""
 Uploader per YouTube basato SOLO su OAuth (client_secret.json + token.json).
 
 Viene usato sia in locale che su GitHub Actions.
 - In locale, se token.json non esiste, apre il flusso OAuth nel browser.
-- Su GitHub Actions, token.json esiste già (lo ricostruiamo dai secret) e il codice
+- Su GitHub Actions, token.json esiste giÃ  (lo ricostruiamo dai secret) e il codice
   usa solo il refresh token, senza aprire nessun browser.
 """
 
@@ -143,16 +143,16 @@ def upload_video(
         )
         response = request.execute()
         video_id = response["id"]
-        print(f"✅ Upload completato. ID video: {video_id}")
+        print(f"âœ… Upload completato. ID video: {video_id}")
         return video_id
     except HttpError as e:
         msg = str(e)
-        print(f"❌ Errore durante l'upload: {msg}")
+        print(f"âŒ Errore durante l'upload: {msg}")
 
         if "uploadLimitExceeded" in msg:
             print(
                 "[YouTube] Limite di upload raggiunto per questo account. "
-                "La pipeline è ok, ma YouTube al momento non accetta nuovi video."
+                "La pipeline Ã¨ ok, ma YouTube al momento non accetta nuovi video."
             )
             return ""
 
@@ -160,7 +160,7 @@ def upload_video(
 
 
 # ---------------------------------------------------------------------------
-# GENERAZIONE TESTO (SCRIPT) DEADPAN FILES — "VITA NATURAL DURANTE"
+# GENERAZIONE TESTO (SCRIPT) DEADPAN FILES â€” "VITA NATURAL DURANTE"
 # ---------------------------------------------------------------------------
 
 
@@ -222,15 +222,15 @@ def generate_script():
         "a shadow with no source", "a timestamp that goes backwards", "breathing behind the mic",
         "footsteps approaching the recorder", "a second voice that never speaks again",
         "a reflection that shows another room", "a door that opens on a closed corridor",
-        "a name that shouldn’t exist", "a camera angle from impossible distance",
+        "a name that shouldnâ€™t exist", "a camera angle from impossible distance",
         "a fingerprint set that matches itself", "a file created tomorrow", "a call from a dead number"
     ]
 
     contradictions = [
         "the report says one thing, the evidence says another",
         "the timeline breaks in one place",
-        "every witness agrees—on the wrong detail",
-        "the photo doesn’t match the room",
+        "every witness agreesâ€”on the wrong detail",
+        "the photo doesnâ€™t match the room",
         "the audio contains no voices, only proximity",
         "the access log shows entry, the camera shows nobody",
         "the signature belongs to someone not on payroll",
@@ -247,7 +247,7 @@ def generate_script():
         "the entire shift was reassigned",
         "the archive clerk stopped coming to work",
         "the station closed early, once, and never explained why",
-        "the case number was sealed again—under a new label",
+        "the case number was sealed againâ€”under a new label",
         "the tape was returned with fresh fingerprints",
         "the report vanished from the system overnight"
     ]
@@ -260,9 +260,9 @@ def generate_script():
     ctas = [
         "Follow Deadpan Files. Another box is waiting.",
         "Follow Deadpan Files. The next file has your city in it.",
-        "Follow Deadpan Files. This wasn’t the last recording.",
-        "Follow Deadpan Files. The next case starts with a name you’ll recognize.",
-        "Follow Deadpan Files. We’re opening the next drawer tonight.",
+        "Follow Deadpan Files. This wasnâ€™t the last recording.",
+        "Follow Deadpan Files. The next case starts with a name youâ€™ll recognize.",
+        "Follow Deadpan Files. Weâ€™re opening the next drawer tonight.",
         "Follow Deadpan Files for more archived horror."
     ]
 
@@ -295,13 +295,13 @@ def generate_script():
         return f"{pick(first_names)} {pick(last_names)}"
 
     def tighten(s: str, max_len: int = 140) -> str:
-        s = " ".join(s.replace("—", ". ").replace("…", "...").split())
+        s = " ".join(s.replace("â€”", ". ").replace("â€¦", "...").split())
         if len(s) <= max_len:
             return s
         return textwrap.shorten(s, width=max_len, placeholder="...")
 
     # ----------------------------
-    # COSTRUZIONE “FATTI”
+    # COSTRUZIONE â€œFATTIâ€
     # ----------------------------
     agency = pick(agencies)
     case_code = make_case_code()
@@ -321,13 +321,13 @@ def generate_script():
         "The call log says {t}. The recording begins before we answered.",
         "We found a {item} in {place}. It was already labeled with our case number.",
         "The report lists {person} as a witness. {person} died in {year}.",
-        "Footage from {place} is clean—until the last ten seconds."
+        "Footage from {place} is cleanâ€”until the last ten seconds."
     ]
     hook = tighten(pick(hook_patterns).format(
         code=case_code, year=year, agency=agency, t=t, item=item, place=place, person=person
     ), 170)
 
-    # “Evidence beat” e “Escalation beat”
+    # â€œEvidence beatâ€ e â€œEscalation beatâ€
     evidence_patterns = [
         "The {item} {verb} and stored under {agency}. Then it moved shelves by itself.",
         "Every frame shows {anomaly}. The room has no object that could cast it.",
@@ -343,19 +343,19 @@ def generate_script():
         "We checked again. {contradiction}.",
         "Forensics flagged the file. {contradiction}.",
         "When we enhanced the audio, the noise shaped into a second rhythm.",
-        "The timeline doesn’t drift. It snaps.",
-        "The case appears in another archive—same hash, different year.",
+        "The timeline doesnâ€™t drift. It snaps.",
+        "The case appears in another archiveâ€”same hash, different year.",
     ]
     escalation = tighten(pick(escalation_patterns).format(contradiction=contradiction), 170)
 
     # Twist + ending
     twist_patterns = [
-        "Then the evidence did something it can’t do: it addressed us by name.",
-        "The last frame shows the victim looking into the lens—filmed from behind.",
-        "The whisper wasn’t a word. It was a date—tomorrow.",
-        "The calls weren’t from the victim. They were from the evidence room.",
+        "Then the evidence did something it canâ€™t do: it addressed us by name.",
+        "The last frame shows the victim looking into the lensâ€”filmed from behind.",
+        "The whisper wasnâ€™t a word. It was a dateâ€”tomorrow.",
+        "The calls werenâ€™t from the victim. They were from the evidence room.",
         "The signature belongs to an officer who never existed on payroll.",
-        "The file’s creation date is tomorrow. We verified the server clock.",
+        "The fileâ€™s creation date is tomorrow. We verified the server clock.",
     ]
     twist = tighten(pick(twist_patterns), 170)
 
@@ -364,7 +364,7 @@ def generate_script():
         "By morning, {consequence}.",
         "After we logged it, {consequence}.",
         "We sealed the drawer again. Two days later, the label changed.",
-        "We requested the original export. What we received was shorter—missing one second."
+        "We requested the original export. What we received was shorterâ€”missing one second."
     ]
     ending = tighten(pick(end_patterns).format(consequence=consequence), 190)
 
@@ -378,12 +378,12 @@ def generate_script():
     formats.append(f"{hook} {evidence} {escalation} {twist} {ending} {cta}")
 
     formats.append(
-        f"Night dispatch log — {agency}. {hook} "
+        f"Night dispatch log â€” {agency}. {hook} "
         f"Unit reports activity at {place}. {evidence} {twist} {ending} {cta}"
     )
 
     formats.append(
-        f"Transcript excerpt — case {case_code}. {hook} "
+        f"Transcript excerpt â€” case {case_code}. {hook} "
         f"{evidence} {escalation} {twist} {cta}"
     )
 
@@ -398,7 +398,7 @@ def generate_script():
     )
 
     formats.append(
-        f"Evidence catalog entry {case_code}. {item} — status: sealed. "
+        f"Evidence catalog entry {case_code}. {item} â€” status: sealed. "
         f"{hook} {escalation} {twist} {ending} {cta}"
     )
 
@@ -432,9 +432,9 @@ def generate_script():
         f"Primary contradiction: {contradiction}. {twist} {ending} {cta}"
     )
 
-    # Scegli formato e “ripulisci” per TTS
+    # Scegli formato e â€œripulisciâ€ per TTS
     script = pick(formats)
-    script = " ".join(script.replace("—", ". ").replace("…", "...").split()).strip()
+    script = " ".join(script.replace("â€”", ". ").replace("â€¦", "...").split()).strip()
 
     # ----------------------------
     # TITOLI: tantissimi pattern + variabili
@@ -446,7 +446,7 @@ def generate_script():
         "The Call From A Dead Number",
         "The Evidence Room Incident",
         "The Transcript With One Missing Second",
-        "The Night Dispatch Log They Won’t Explain",
+        "The Night Dispatch Log They Wonâ€™t Explain",
         "The Timestamp That Went Backwards",
         "The Report Signed By Nobody",
         "The Tape That Knew Tomorrow"
@@ -457,13 +457,13 @@ def generate_script():
     )
     title = tighten(title, 88)
 
-    # Descrizione: breve, “seriale”, monetizzabile
+    # Descrizione: breve, â€œserialeâ€, monetizzabile
     description = "\n".join([
         hook,
         evidence,
         twist,
         "",
-        "Deadpan Files — short true crime / horror case files.",
+        "Deadpan Files â€” short true crime / horror case files.",
         "New files drop automatically. Follow for the next report."
     ])
 
@@ -484,7 +484,7 @@ def generate_script():
 
 
 # ---------------------------------------------------------------------------
-# SINTESI VOCALE (legacy) — lasciata per compatibilità
+# SINTESI VOCALE (legacy) â€” lasciata per compatibilitÃ 
 # ---------------------------------------------------------------------------
 
 
@@ -599,9 +599,11 @@ if __name__ == "__main__":
         upload_video(
             video_path=dummy_path,
             title="Test upload YouTube (OAuth only)",
-            description="Upload di test eseguito da uploader.py",
+            description="Upload di test eseguito da uploader.py #shorts",
             tags=["test", "automation"],
-            privacy_status="unlisted",
+            privacy_status="public",
         )
     else:
         print(f"Nessun file di test trovato: {dummy_path}")
+
+
