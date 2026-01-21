@@ -18,21 +18,12 @@ def _run(cmd: list[str]) -> None:
 
 
 def generate_subtitles_txt_from_text(text: str, out_path: Path) -> Path:
-    """
-    Compat: alcune parti del progetto importano questa funzione.
-    """
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(text.strip() + "\n", encoding="utf-8")
     return out_path
 
 
 def _ffmpeg_escape_subtitles_path(p: Path) -> str:
-    """
-    IMPORTANTISSIMO per Windows:
-    - usa forward slashes
-    - escape della ':' del drive -> C:/... diventa C\\:/...
-    - escape di eventuali apostrofi
-    """
     s = p.resolve().as_posix()
     if len(s) >= 2 and s[1] == ":":
         s = s[0] + r"\:" + s[2:]
@@ -41,30 +32,29 @@ def _ffmpeg_escape_subtitles_path(p: Path) -> str:
 
 
 def _force_style_cinematic() -> str:
-    # Safe per Shorts: più su, margini larghi, box scuro, outline forte
+    # Safe Shorts (molto leggibile) — ma ricordati: in ASS i Margin* possono essere per-dialogue.
     return (
         "FontName=DejaVu Sans,"
-        "Fontsize=58,"
+        "Fontsize=56,"
         "Bold=1,"
-        "Outline=7,"
+        "Outline=8,"
         "Shadow=2,"
         "BorderStyle=3,"
-        "BackColour=&H8F000000,"
+        "BackColour=&H90000000,"
         "OutlineColour=&H00000000,"
         "PrimaryColour=&H00FFFFFF,"
         "Alignment=2,"
         "WrapStyle=2,"
-        "MarginV=520,"
+        "MarginV=720,"
         "MarginL=120,"
         "MarginR=120"
     )
 
 
 def _force_style_aggressive() -> str:
-    # Testo grande ma safe (no tagli), box presente
     return (
         "FontName=DejaVu Sans,"
-        "Fontsize=74,"
+        "Fontsize=70,"
         "Bold=1,"
         "Outline=10,"
         "Shadow=2,"
@@ -74,14 +64,13 @@ def _force_style_aggressive() -> str:
         "PrimaryColour=&H00FFFFFF,"
         "Alignment=2,"
         "WrapStyle=2,"
-        "MarginV=560,"
+        "MarginV=760,"
         "MarginL=120,"
         "MarginR=120"
     )
 
 
 def _get_style_from_env() -> str:
-    # SUB_STYLE=aggressive | cinematic
     style = (os.getenv("SUB_STYLE") or "cinematic").strip().lower()
     if style in {"aggressive", "big", "full"}:
         return _force_style_aggressive()
@@ -90,9 +79,9 @@ def _get_style_from_env() -> str:
 
 def _wrap_text_every_n_words(text: str, n: int = 5) -> str:
     """
-    Inserisce \\N (a capo ASS) ogni n parole SE la riga è più lunga di n parole.
-    - Se contiene già \\N, non tocca.
-    - Preserva eventuali override tags iniziali tipo: "{\\an8}{\\bord6}..."
+    Inserisce \\N ogni n parole se la riga è lunga.
+    Se già contiene \\N, non tocca.
+    Preserva override tags iniziali tipo "{\\an8}{\\bord6}".
     """
     if "\\N" in text:
         return text
@@ -108,14 +97,21 @@ def _wrap_text_every_n_words(text: str, n: int = 5) -> str:
         return prefix + text
 
     chunks = [" ".join(words[i:i + n]) for i in range(0, len(words), n)]
-    # IMPORTANTISSIMO: usare raw string per evitare unicodeescape in Python
     return prefix + r"\N".join(chunks)
 
 
-def _rewrite_ass_with_wrapping(ass_path: Path, out_path: Path, n_words: int = 5) -> Path:
+def _rewrite_ass(
+    ass_path: Path,
+    out_path: Path,
+    n_words: int = 5,
+    margin_l: int = 120,
+    margin_r: int = 120,
+    margin_v: int = 760,
+) -> Path:
     """
-    Riscrive un .ass facendo wrap ogni n_words sulle righe Dialogue:
-    - split sui primi 9 campi, il resto è Text (può contenere virgole)
+    Riscrive il .ass:
+    - wrap testo ogni n_words sulle righe Dialogue:
+    - FORZA MarginL/MarginR/MarginV sulle righe Dialogue (anti-taglio definitivo)
     """
     ass_path = Path(ass_path)
     out_path = Path(out_path)
@@ -132,16 +128,24 @@ def _rewrite_ass_with_wrapping(ass_path: Path, out_path: Path, n_words: int = 5)
         head = "Dialogue:"
         body = line[len(head):].lstrip()
 
-        # Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
+        # Dialogue: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
         parts = body.split(",", 9)
         if len(parts) < 10:
             new_lines.append(line)
             continue
 
+        # campi pre: 0..8, testo: 9
         pre = parts[:9]
         txt = parts[9]
-        txt_wrapped = _wrap_text_every_n_words(txt, n=n_words)
 
+        # forza margini: indexes 5,6,7
+        # pre = [Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect]
+        if len(pre) >= 8:
+            pre[5] = str(margin_l)
+            pre[6] = str(margin_r)
+            pre[7] = str(margin_v)
+
+        txt_wrapped = _wrap_text_every_n_words(txt, n=n_words)
         rebuilt = head + " " + ",".join(pre + [txt_wrapped])
         new_lines.append(rebuilt)
 
@@ -154,16 +158,14 @@ def add_burned_in_subtitles(
     subtitles_ass_path: Path | None = None,
     output_dir: Path | None = None,
     output_name: str = "video_final.mp4",
-    # compat extra
     subtitles_path: Path | None = None,
     subtitles_file: Path | None = None,
 ) -> Path:
     """
-    Brucia i sottotitoli ASS con libass e forza wrap ogni N parole (default 5).
-
-    Env:
-      - SUB_STYLE=cinematic|aggressive
-      - SUB_WRAP_WORDS=5
+    Burn-in sottotitoli ASS con:
+    - wrap ogni N parole (default 5)
+    - margini Dialogue forzati (anti taglio)
+    - stile forzato (force_style)
     """
     if output_dir is None:
         output_dir = video_path.parent
@@ -185,12 +187,30 @@ def add_burned_in_subtitles(
     if n_words < 2:
         n_words = 2
 
+    # margini safe extra (Shorts UI)
+    # puoi anche cambiare via env senza toccare codice
+    def _env_int(name: str, default: int) -> int:
+        try:
+            return int((os.getenv(name) or str(default)).strip())
+        except Exception:
+            return default
+
+    margin_l = _env_int("SUB_MARGIN_L", 140)
+    margin_r = _env_int("SUB_MARGIN_R", 140)
+    margin_v = _env_int("SUB_MARGIN_V", 860)  # molto alto -> più su
+
     wrapped_ass = output_dir / "subtitles_wrapped.ass"
-    _rewrite_ass_with_wrapping(subs_in, wrapped_ass, n_words=n_words)
+    _rewrite_ass(
+        subs_in,
+        wrapped_ass,
+        n_words=n_words,
+        margin_l=margin_l,
+        margin_r=margin_r,
+        margin_v=margin_v,
+    )
 
     subs = _ffmpeg_escape_subtitles_path(wrapped_ass)
     force_style = _get_style_from_env()
-
     vf = f"subtitles='{subs}':force_style='{force_style}'"
 
     _run([
