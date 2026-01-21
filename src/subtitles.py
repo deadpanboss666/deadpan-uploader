@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -40,46 +41,42 @@ def _ffmpeg_escape_subtitles_path(p: Path) -> str:
 
 
 def _force_style_cinematic() -> str:
-    # Off-white + box semi trasparente + outline più spesso + safe margins
+    # Safe per Shorts: molto su + box scuro + outline forte
     return (
         "FontName=DejaVu Sans,"
-        "Fontsize=74,"
+        "Fontsize=58,"
         "Bold=1,"
-        "Outline=5,"
+        "Outline=7,"
         "Shadow=2,"
         "BorderStyle=3,"
-        "BackColour=&H7A000000,"
-        "OutlineColour=&H00000000,"
-        "PrimaryColour=&H00F2F2F2,"
-        "Alignment=2,"
-        "WrapStyle=2,"
-        "MarginV=340,"
-        "MarginL=110,"
-        "MarginR=110"
-    )
-
-
-def _force_style_aggressive() -> str:
-    # Stile “a tutta pagina” ma pulito:
-    # - font gigante
-    # - box più presente
-    # - outline forte per leggibilità
-    # - margini più stretti per occupare più area
-    return (
-        "FontName=DejaVu Sans,"
-        "Fontsize=82,"
-        "Bold=1,"
-        "Outline=8,"
-        "Shadow=2,"
-        "BorderStyle=3,"
-        "BackColour=&H8F000000,"   # box più scuro
+        "BackColour=&H8F000000,"
         "OutlineColour=&H00000000,"
         "PrimaryColour=&H00FFFFFF,"
         "Alignment=2,"
         "WrapStyle=2,"
-        "MarginV=420,"             # un po’ più su (safe area)
-        "MarginL=110,"
-        "MarginR=110"
+        "MarginV=520,"
+        "MarginL=120,"
+        "MarginR=120"
+    )
+
+
+def _force_style_aggressive() -> str:
+    # Grande ma safe (no tagli), box presente
+    return (
+        "FontName=DejaVu Sans,"
+        "Fontsize=74,"
+        "Bold=1,"
+        "Outline=10,"
+        "Shadow=2,"
+        "BorderStyle=3,"
+        "BackColour=&H95000000,"
+        "OutlineColour=&H00000000,"
+        "PrimaryColour=&H00FFFFFF,"
+        "Alignment=2,"
+        "WrapStyle=2,"
+        "MarginV=560,"
+        "MarginL=120,"
+        "MarginR=120"
     )
 
 
@@ -91,21 +88,83 @@ def _get_style_from_env() -> str:
     return _force_style_cinematic()
 
 
+def _wrap_text_every_n_words(text: str, n: int = 5) -> str:
+    """
+    Inserisce \N (a capo ASS) ogni n parole SE la riga è più lunga di n parole.
+    Se contiene già \N, non tocca.
+    Preserva eventuali override tags iniziali tipo: "{\\an8}{\\bord6}..."
+    """
+    if "\\N" in text:
+        return text
+
+    # prendi override tags iniziali (uno o più blocchi {...})
+    prefix = ""
+    m = re.match(r"^(\{[^}]*\})+", text)
+    if m:
+        prefix = m.group(0)
+        text = text[len(prefix):]
+
+    words = text.split()
+    if len(words) <= n:
+        return prefix + text
+
+    chunks = [" ".join(words[i:i+n]) for i in range(0, len(words), n)]
+    return prefix + r"\N".join(chunks)
+
+
+def _rewrite_ass_with_wrapping(ass_path: Path, out_path: Path, n_words: int = 5) -> Path:
+    """
+    Riscrive un .ass facendo wrap ogni n_words sulle righe Dialogue:
+    - parse robusto: split sui primi 9 campi (fino a Effect), il resto è Text.
+    """
+    ass_path = Path(ass_path)
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    lines = ass_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    new_lines: list[str] = []
+
+    for line in lines:
+        if not line.startswith("Dialogue:"):
+            new_lines.append(line)
+            continue
+
+        # Dialogue: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
+        head = "Dialogue:"
+        body = line[len(head):].lstrip()
+
+        # split in 10 pezzi: 9 virgole + il testo finale (resto)
+        parts = body.split(",", 9)
+        if len(parts) < 10:
+            # formato strano, non tocchiamo
+            new_lines.append(line)
+            continue
+
+        pre = parts[:9]
+        txt = parts[9]
+        txt_wrapped = _wrap_text_every_n_words(txt, n=n_words)
+        rebuilt = head + " " + ",".join(pre + [txt_wrapped])
+        new_lines.append(rebuilt)
+
+    out_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    return out_path
+
+
 def add_burned_in_subtitles(
     video_path: Path,
     subtitles_ass_path: Path | None = None,
     output_dir: Path | None = None,
     output_name: str = "video_final.mp4",
-    # compat extra: alcuni pezzi potrebbero chiamarlo così
+    # compat extra
     subtitles_path: Path | None = None,
     subtitles_file: Path | None = None,
 ) -> Path:
     """
-    Brucia i sottotitoli ASS con libass.
+    Brucia i sottotitoli ASS con libass, e forza wrap ogni 5 parole se la riga è lunga.
 
-    Stile controllato da env:
-      - SUB_STYLE=cinematic   (default)
-      - SUB_STYLE=aggressive  (testo gigante “a tutta pagina”)
+    Controlli:
+      - SUB_STYLE=cinematic|aggressive
+      - SUB_WRAP_WORDS=5 (puoi cambiare il numero se vuoi)
     """
     if output_dir is None:
         output_dir = video_path.parent
@@ -114,12 +173,26 @@ def add_burned_in_subtitles(
     if subs_path is None:
         raise ValueError("Missing subtitles path (subtitles_ass_path / subtitles_path / subtitles_file)")
 
+    output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     out_path = output_dir / output_name
 
-    subs = _ffmpeg_escape_subtitles_path(Path(subs_path))
-    force_style = _get_style_from_env()
+    subs_in = Path(subs_path)
 
+    # wrap words (default 5)
+    try:
+        n_words = int((os.getenv("SUB_WRAP_WORDS") or "5").strip())
+    except Exception:
+        n_words = 5
+    if n_words < 2:
+        n_words = 2
+
+    # crea una copia wrap-compat nella stessa cartella output
+    wrapped_ass = output_dir / "subtitles_wrapped.ass"
+    _rewrite_ass_with_wrapping(subs_in, wrapped_ass, n_words=n_words)
+
+    subs = _ffmpeg_escape_subtitles_path(wrapped_ass)
+    force_style = _get_style_from_env()
     vf = f"subtitles='{subs}':force_style='{force_style}'"
 
     _run([
