@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -31,11 +32,63 @@ def _ffmpeg_escape_subtitles_path(p: Path) -> str:
     - escape della ':' del drive -> C:/... diventa C\\:/...
     - escape di eventuali apostrofi
     """
-    s = p.resolve().as_posix()  # C:/Users/...
+    s = p.resolve().as_posix()
     if len(s) >= 2 and s[1] == ":":
         s = s[0] + r"\:" + s[2:]
     s = s.replace("'", r"\'")
     return s
+
+
+def _force_style_cinematic() -> str:
+    # Off-white + box semi trasparente + outline più spesso + safe margins
+    return (
+        "FontName=DejaVu Sans,"
+        "Fontsize=74,"
+        "Bold=1,"
+        "Outline=5,"
+        "Shadow=2,"
+        "BorderStyle=3,"
+        "BackColour=&H7A000000,"
+        "OutlineColour=&H00000000,"
+        "PrimaryColour=&H00F2F2F2,"
+        "Alignment=2,"
+        "WrapStyle=2,"
+        "MarginV=300,"
+        "MarginL=80,"
+        "MarginR=80"
+    )
+
+
+def _force_style_aggressive() -> str:
+    # Stile “a tutta pagina” ma pulito:
+    # - font gigante
+    # - box più presente
+    # - outline forte per leggibilità
+    # - margini più stretti per occupare più area
+    return (
+        "FontName=DejaVu Sans,"
+        "Fontsize=82,"
+        "Bold=1,"
+        "Outline=8,"
+        "Shadow=2,"
+        "BorderStyle=3,"
+        "BackColour=&H8F000000,"   # box più scuro
+        "OutlineColour=&H00000000,"
+        "PrimaryColour=&H00FFFFFF,"
+        "Alignment=2,"
+        "WrapStyle=2,"
+        "MarginV=260,"             # un po’ più su (safe area)
+        "MarginL=55,"
+        "MarginR=55"
+    )
+
+
+def _get_style_from_env() -> str:
+    # SUB_STYLE=aggressive | cinematic
+    style = (os.getenv("SUB_STYLE") or "cinematic").strip().lower()
+    if style in {"aggressive", "big", "full"}:
+        return _force_style_aggressive()
+    return _force_style_cinematic()
 
 
 def add_burned_in_subtitles(
@@ -48,12 +101,11 @@ def add_burned_in_subtitles(
     subtitles_file: Path | None = None,
 ) -> Path:
     """
-    Brucia DAVVERO i sottotitoli ASS con il filtro 'subtitles' (libass).
-    Stile "cinematic":
-    - off-white (non bianco sparato)
-    - stroke più spesso
-    - box semitrasparente pulito
-    - margini safe per evitare tagli
+    Brucia i sottotitoli ASS con libass.
+
+    Stile controllato da env:
+      - SUB_STYLE=cinematic   (default)
+      - SUB_STYLE=aggressive  (testo gigante “a tutta pagina”)
     """
     if output_dir is None:
         output_dir = video_path.parent
@@ -66,25 +118,7 @@ def add_burned_in_subtitles(
     out_path = output_dir / output_name
 
     subs = _ffmpeg_escape_subtitles_path(Path(subs_path))
-
-    # ASS colors are &HAABBGGRR
-    # PrimaryColour: off-white (F2F2F2), OutlineColour: black, BackColour: semi-transparent black
-    force_style = (
-        "FontName=DejaVu Sans,"
-        "Fontsize=54,"
-        "Bold=1,"
-        "Outline=5,"
-        "Shadow=2,"
-        "BorderStyle=3,"
-        "BackColour=&H7A000000,"
-        "OutlineColour=&H00000000,"
-        "PrimaryColour=&H00F2F2F2,"
-        "Alignment=2,"
-        "WrapStyle=2,"
-        "MarginV=230,"
-        "MarginL=90,"
-        "MarginR=90"
-    )
+    force_style = _get_style_from_env()
 
     vf = f"subtitles='{subs}':force_style='{force_style}'"
 

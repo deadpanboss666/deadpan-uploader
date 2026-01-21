@@ -29,6 +29,7 @@ def apply_quality_pipeline(
     Pipeline robusta per Shorts verticali 9:16:
 
     1) Taglia/normalizza audio a max `duration_limit` secondi (WAV 48k mono).
+       Evita "in-place edit": se input e output coincidono, usa un nome alternativo.
     2) Crea MP4 verticale 1080x1920 con background:
        - se background_path è IMMAGINE: loop immagine
        - se background_path è VIDEO: loop video (stream_loop)
@@ -47,7 +48,17 @@ def apply_quality_pipeline(
     final_video.parent.mkdir(parents=True, exist_ok=True)
 
     # 1) Trim + normalize audio into WAV 48k mono
+    # Default output name near final_video
     trimmed_audio = final_video.with_name("audio_trimmed.wav")
+
+    # If raw_audio is already audio_trimmed.wav in the same folder -> avoid in-place
+    try:
+        same_file = raw_audio.resolve() == trimmed_audio.resolve()
+    except Exception:
+        same_file = (str(raw_audio) == str(trimmed_audio))
+
+    if same_file:
+        trimmed_audio = final_video.with_name("audio_trimmed2.wav")
 
     cmd_trim = [
         "ffmpeg",
@@ -62,10 +73,6 @@ def apply_quality_pipeline(
     run_ffmpeg(cmd_trim)
 
     # 2) Build cinematic background -> final vertical mp4
-    # We force:
-    # - correct vertical canvas
-    # - aspect safe: scale up then crop to 1080x1920 (no black bars)
-    # - slight vignette + grain + mild contrast/sat (cinematic)
     vf = (
         f"scale={width}:{height}:force_original_aspect_ratio=increase,"
         f"crop={width}:{height},"
@@ -77,7 +84,6 @@ def apply_quality_pipeline(
     )
 
     if _is_video_file(background_path):
-        # Loop background video forever (until -shortest ends with audio)
         cmd_video = [
             "ffmpeg",
             "-y",
@@ -97,7 +103,6 @@ def apply_quality_pipeline(
             str(final_video),
         ]
     else:
-        # Loop still image
         cmd_video = [
             "ffmpeg",
             "-y",
