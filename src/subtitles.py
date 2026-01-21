@@ -53,9 +53,9 @@ def _force_style_cinematic() -> str:
         "PrimaryColour=&H00F2F2F2,"
         "Alignment=2,"
         "WrapStyle=2,"
-        "MarginV=300,"
-        "MarginL=80,"
-        "MarginR=80"
+        "MarginV=340,"
+        "MarginL=110,"
+        "MarginR=110"
     )
 
 
@@ -77,9 +77,9 @@ def _force_style_aggressive() -> str:
         "PrimaryColour=&H00FFFFFF,"
         "Alignment=2,"
         "WrapStyle=2,"
-        "MarginV=260,"             # un po’ più su (safe area)
-        "MarginL=55,"
-        "MarginR=55"
+        "MarginV=420,"             # un po’ più su (safe area)
+        "MarginL=110,"
+        "MarginR=110"
     )
 
 
