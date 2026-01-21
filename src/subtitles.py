@@ -41,7 +41,7 @@ def _ffmpeg_escape_subtitles_path(p: Path) -> str:
 
 
 def _force_style_cinematic() -> str:
-    # Safe per Shorts: molto su + box scuro + outline forte
+    # Safe per Shorts: più su, margini larghi, box scuro, outline forte
     return (
         "FontName=DejaVu Sans,"
         "Fontsize=58,"
@@ -61,7 +61,7 @@ def _force_style_cinematic() -> str:
 
 
 def _force_style_aggressive() -> str:
-    # Grande ma safe (no tagli), box presente
+    # Testo grande ma safe (no tagli), box presente
     return (
         "FontName=DejaVu Sans,"
         "Fontsize=74,"
@@ -90,14 +90,13 @@ def _get_style_from_env() -> str:
 
 def _wrap_text_every_n_words(text: str, n: int = 5) -> str:
     """
-    Inserisce \N (a capo ASS) ogni n parole SE la riga è più lunga di n parole.
-    Se contiene già \N, non tocca.
-    Preserva eventuali override tags iniziali tipo: "{\\an8}{\\bord6}..."
+    Inserisce \\N (a capo ASS) ogni n parole SE la riga è più lunga di n parole.
+    - Se contiene già \\N, non tocca.
+    - Preserva eventuali override tags iniziali tipo: "{\\an8}{\\bord6}..."
     """
     if "\\N" in text:
         return text
 
-    # prendi override tags iniziali (uno o più blocchi {...})
     prefix = ""
     m = re.match(r"^(\{[^}]*\})+", text)
     if m:
@@ -108,14 +107,15 @@ def _wrap_text_every_n_words(text: str, n: int = 5) -> str:
     if len(words) <= n:
         return prefix + text
 
-    chunks = [" ".join(words[i:i+n]) for i in range(0, len(words), n)]
+    chunks = [" ".join(words[i:i + n]) for i in range(0, len(words), n)]
+    # IMPORTANTISSIMO: usare raw string per evitare unicodeescape in Python
     return prefix + r"\N".join(chunks)
 
 
 def _rewrite_ass_with_wrapping(ass_path: Path, out_path: Path, n_words: int = 5) -> Path:
     """
     Riscrive un .ass facendo wrap ogni n_words sulle righe Dialogue:
-    - parse robusto: split sui primi 9 campi (fino a Effect), il resto è Text.
+    - split sui primi 9 campi, il resto è Text (può contenere virgole)
     """
     ass_path = Path(ass_path)
     out_path = Path(out_path)
@@ -129,20 +129,19 @@ def _rewrite_ass_with_wrapping(ass_path: Path, out_path: Path, n_words: int = 5)
             new_lines.append(line)
             continue
 
-        # Dialogue: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
         head = "Dialogue:"
         body = line[len(head):].lstrip()
 
-        # split in 10 pezzi: 9 virgole + il testo finale (resto)
+        # Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
         parts = body.split(",", 9)
         if len(parts) < 10:
-            # formato strano, non tocchiamo
             new_lines.append(line)
             continue
 
         pre = parts[:9]
         txt = parts[9]
         txt_wrapped = _wrap_text_every_n_words(txt, n=n_words)
+
         rebuilt = head + " " + ",".join(pre + [txt_wrapped])
         new_lines.append(rebuilt)
 
@@ -160,11 +159,11 @@ def add_burned_in_subtitles(
     subtitles_file: Path | None = None,
 ) -> Path:
     """
-    Brucia i sottotitoli ASS con libass, e forza wrap ogni 5 parole se la riga è lunga.
+    Brucia i sottotitoli ASS con libass e forza wrap ogni N parole (default 5).
 
-    Controlli:
+    Env:
       - SUB_STYLE=cinematic|aggressive
-      - SUB_WRAP_WORDS=5 (puoi cambiare il numero se vuoi)
+      - SUB_WRAP_WORDS=5
     """
     if output_dir is None:
         output_dir = video_path.parent
@@ -179,7 +178,6 @@ def add_burned_in_subtitles(
 
     subs_in = Path(subs_path)
 
-    # wrap words (default 5)
     try:
         n_words = int((os.getenv("SUB_WRAP_WORDS") or "5").strip())
     except Exception:
@@ -187,12 +185,12 @@ def add_burned_in_subtitles(
     if n_words < 2:
         n_words = 2
 
-    # crea una copia wrap-compat nella stessa cartella output
     wrapped_ass = output_dir / "subtitles_wrapped.ass"
     _rewrite_ass_with_wrapping(subs_in, wrapped_ass, n_words=n_words)
 
     subs = _ffmpeg_escape_subtitles_path(wrapped_ass)
     force_style = _get_style_from_env()
+
     vf = f"subtitles='{subs}':force_style='{force_style}'"
 
     _run([
