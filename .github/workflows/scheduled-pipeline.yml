@@ -1,20 +1,16 @@
 name: deadpan-pipeline
 
 on:
-  push:
-    branches:
-      - main
-
-  # Lancio manuale (utile per test senza aspettare lo schedule)
   workflow_dispatch:
-
-  # Schedule 3 volte al giorno (orario "americano")
-  # Nota: GitHub Actions usa CRON in UTC.
-  # Se volevi 15,19,23 UTC come prima, le lasciamo identiche.
+    inputs:
+      upload_yt:
+        description: "1 = upload, 0 = no upload"
+        required: true
+        default: "1"
   schedule:
-    - cron: "0 15 * * *"
-    - cron: "0 19 * * *"
-    - cron: "0 23 * * *"
+    - cron: "0 15,19,23 * * *"
+  push:
+    branches: [ "main" ]
 
 jobs:
   run-pipeline:
@@ -23,8 +19,7 @@ jobs:
     env:
       CLIENT_SECRET_JSON: ${{ secrets.CLIENT_SECRET_JSON }}
       TOKEN_JSON: ${{ secrets.TOKEN_JSON }}
-      # Toggle: 1 = carica su YouTube, 0 = genera soltanto (lo useremo quando vuoi evitare upload)
-      UPLOAD_YT: ${{ vars.UPLOAD_YT }}
+      UPLOAD_YT: ${{ github.event.inputs.upload_yt || '1' }}
 
     steps:
       - name: Checkout repository
@@ -51,5 +46,5 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run script
+      - name: Run pipeline
         run: python src/main.py
