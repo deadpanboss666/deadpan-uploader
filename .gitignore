@@ -12,6 +12,10 @@ __pycache__/
 # Build/output
 build/
 videos_to_upload/
+videos_to_upload/*.mp4
+!videos_to_upload/subtitles.txt
+!videos_to_upload/subtitles.txt
+
 
 # Local helpers / data
 data/
