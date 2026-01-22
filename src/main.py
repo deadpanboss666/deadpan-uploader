@@ -18,7 +18,11 @@ VIDEOS_DIR = ROOT_DIR / "videos_to_upload"
 def _run_capture(cmd: list[str]) -> str:
     p = subprocess.run(cmd, capture_output=True, text=True)
     if p.returncode != 0:
-        raise RuntimeError(f"Command failed: {' '.join(cmd)}\nSTDOUT:\n{p.stdout}\nSTDERR:\n{p.stderr}")
+        raise RuntimeError(
+            f"Command failed: {' '.join(cmd)}\n"
+            f"STDOUT:\n{p.stdout}\n"
+            f"STDERR:\n{p.stderr}"
+        )
     return p.stdout.strip()
 
 
@@ -80,11 +84,71 @@ def _find_audio() -> Path:
     raise FileNotFoundError("Audio non trovato in build/ (voice.mp3, audio.wav, ecc.).")
 
 
+def _make_basic_ass_from_txt(txt_path: Path, ass_out: Path) -> Path:
+    """
+    Crea un .ass minimale da un .txt (una riga per sottotitolo).
+    Timing semplice: ogni riga ~1.25s.
+    È un fallback per GitHub Actions quando manca la generazione ASS.
+    """
+    raw = txt_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    lines = [t.strip() for t in raw if t.strip()]
+    if not lines:
+        raise FileNotFoundError(f"File sottotitoli txt vuoto: {txt_path}")
+
+    def fmt_time(seconds: float) -> str:
+        h = int(seconds // 3600)
+        m = int((seconds % 3600) // 60)
+        s = seconds % 60
+        return f"{h}:{m:02d}:{s:05.2f}"
+
+    header = """[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 2
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,DejaVu Sans,64,&H00FFFFFF,&H00000000,&H90000000,1,0,0,0,100,100,0,0,3,10,2,2,140,140,860,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+    start = 0.0
+    step = 1.25
+    dur = 1.25
+
+    out = [header]
+    for t in lines:
+        t = t.replace("\r", "")
+        s = fmt_time(start)
+        e = fmt_time(start + dur)
+        out.append(f"Dialogue: 0,{s},{e},Default,,0,0,0,,{t}")
+        start += step
+
+    ass_out.parent.mkdir(parents=True, exist_ok=True)
+    ass_out.write_text("\n".join(out) + "\n", encoding="utf-8")
+    return ass_out
+
+
 def _require_subtitles_ass() -> Path:
     subs = BUILD_DIR / "subtitles.ass"
-    if not subs.exists() or subs.stat().st_size == 0:
-        raise FileNotFoundError(f"[Monday] Sottotitoli mancanti o vuoti: {subs}")
-    return subs
+    if subs.exists() and subs.stat().st_size > 0:
+        return subs
+
+    # fallback: se esiste subtitles.txt, generiamo un ass minimale
+    txt_candidates = [
+        BUILD_DIR / "subtitles.txt",
+        VIDEOS_DIR / "subtitles.txt",
+        ROOT_DIR / "subtitles.txt",
+    ]
+    for t in txt_candidates:
+        if t.exists() and t.stat().st_size > 0:
+            print(f"[Monday] subtitles.ass mancante -> creo fallback da: {t}")
+            return _make_basic_ass_from_txt(t, subs)
+
+    raise FileNotFoundError(f"[Monday] Sottotitoli mancanti: {subs} (e nessun subtitles.txt trovato)")
 
 
 def _safe_title() -> str:
@@ -189,11 +253,9 @@ def main() -> None:
     if duration <= 0:
         duration = 45.0
 
-    # Background video procedurale
     from backgrounds import generate_procedural_background
     bg = generate_procedural_background(duration_s=min(duration, 60.0))
 
-    # Base video (bg + audio)
     from quality import apply_quality_pipeline
     base_video = BUILD_DIR / "video_base.mp4"
     apply_quality_pipeline(
@@ -203,7 +265,6 @@ def main() -> None:
         duration_limit=60,
     )
 
-    # Burn subtitles SEMPRE
     final_video = _burn_subs(base_video=base_video, subs_ass=subs_ass)
 
     size = final_video.stat().st_size if final_video.exists() else 0
