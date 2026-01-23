@@ -4,13 +4,13 @@ import hashlib
 import inspect
 import os
 import random
+import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-SRC_DIR = ROOT_DIR / "src"
 BUILD_DIR = ROOT_DIR / "build"
 VIDEOS_DIR = ROOT_DIR / "videos_to_upload"
 
@@ -65,6 +65,7 @@ def _find_audio() -> Path:
     candidates = [
         BUILD_DIR / "voice.mp3",
         BUILD_DIR / "voice.wav",
+        BUILD_DIR / "voice.m4a",
         BUILD_DIR / "audio.wav",
         BUILD_DIR / "tts.wav",
         BUILD_DIR / "audio_trimmed.wav",
@@ -81,26 +82,64 @@ def _find_audio() -> Path:
         if items:
             return items[0]
 
-    raise FileNotFoundError("Audio non trovato in build/ (voice.mp3, audio.wav, ecc.).")
+    raise FileNotFoundError("Audio non trovato in build/ (voice.mp3, voice.wav, ecc.).")
 
 
-def _make_basic_ass_from_txt(txt_path: Path, ass_out: Path) -> Path:
+def _wrap_every_n_words(text: str, n: int = 5) -> str:
+    # Inserisce \N ogni n parole (ASS newline). Non tocca se già contiene \N.
+    if "\\N" in text:
+        return text
+    words = text.split()
+    if len(words) <= n:
+        return text
+    chunks = [" ".join(words[i:i + n]) for i in range(0, len(words), n)]
+    return r"\N".join(chunks)
+
+
+def _ass_time(t: float) -> str:
+    # ASS: H:MM:SS.cc
+    if t < 0:
+        t = 0.0
+    h = int(t // 3600)
+    m = int((t % 3600) // 60)
+    s = t % 60
+    return f"{h}:{m:02d}:{s:05.2f}"
+
+
+def _generate_ass_from_audio_whisper(audio_path: Path, ass_out: Path) -> Path:
     """
-    Crea un .ass minimale da un .txt (una riga per sottotitolo).
-    Timing semplice: ogni riga ~1.25s.
-    È un fallback per GitHub Actions quando manca la generazione ASS.
+    Genera build/subtitles.ass trascrivendo l'audio con faster-whisper (timing reale).
     """
-    raw = txt_path.read_text(encoding="utf-8", errors="ignore").splitlines()
-    lines = [t.strip() for t in raw if t.strip()]
-    if not lines:
-        raise FileNotFoundError(f"File sottotitoli txt vuoto: {txt_path}")
+    try:
+        from faster_whisper import WhisperModel
+    except Exception as e:
+        raise RuntimeError(
+            "Dipendenza mancante: faster-whisper. "
+            "Devi installarla nel workflow (pip install faster-whisper)."
+        ) from e
 
-    def fmt_time(seconds: float) -> str:
-        h = int(seconds // 3600)
-        m = int((seconds % 3600) // 60)
-        s = seconds % 60
-        return f"{h}:{m:02d}:{s:05.2f}"
+    model_name = (os.getenv("SUB_MODEL") or "tiny").strip()  # tiny / base / small ...
+    BUILD_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Cache locale per modelli (utile in CI)
+    cache_dir = BUILD_DIR / ".whisper_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("HF_HOME", str(cache_dir))
+    os.environ.setdefault("XDG_CACHE_HOME", str(cache_dir))
+
+    print(f"[Monday] Whisper model: {model_name}")
+    model = WhisperModel(model_name, device="cpu", compute_type="int8")
+
+    segments, info = model.transcribe(
+        str(audio_path),
+        beam_size=5,
+        vad_filter=True,
+        language="en",  # se vuoi auto: commenta questa riga
+    )
+
+    wrap_n = int((os.getenv("SUB_WRAP_WORDS") or "5").strip() or "5")
+
+    # Stile base (poi il tuo subtitles.py applica force_style + margini safe)
     header = """[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -115,40 +154,42 @@ Style: Default,DejaVu Sans,64,&H00FFFFFF,&H00000000,&H90000000,1,0,0,0,100,100,0
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
-    start = 0.0
-    step = 1.25
-    dur = 1.25
 
-    out = [header]
-    for t in lines:
-        t = t.replace("\r", "")
-        s = fmt_time(start)
-        e = fmt_time(start + dur)
-        out.append(f"Dialogue: 0,{s},{e},Default,,0,0,0,,{t}")
-        start += step
+    lines = [header]
+    count = 0
+    for seg in segments:
+        txt = (seg.text or "").strip()
+        if not txt:
+            continue
+        start = float(seg.start)
+        end = float(seg.end)
+        if end <= start:
+            end = start + 0.8
+
+        txt = _wrap_every_n_words(txt, wrap_n)
+        s = _ass_time(start)
+        e = _ass_time(end)
+
+        # Margin* qui non importa troppo: subtitles.py li forza per-dialogue
+        lines.append(f"Dialogue: 0,{s},{e},Default,,0,0,0,,{txt}")
+        count += 1
+
+    if count == 0:
+        raise RuntimeError("[Monday] Whisper non ha prodotto segmenti (audio vuoto o non riconosciuto).")
 
     ass_out.parent.mkdir(parents=True, exist_ok=True)
-    ass_out.write_text("\n".join(out) + "\n", encoding="utf-8")
+    ass_out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"[Monday] ASS generato: {ass_out} (righe: {count})")
     return ass_out
 
 
-def _require_subtitles_ass() -> Path:
+def _ensure_subtitles_ass(audio_path: Path) -> Path:
     subs = BUILD_DIR / "subtitles.ass"
     if subs.exists() and subs.stat().st_size > 0:
         return subs
 
-    # fallback: se esiste subtitles.txt, generiamo un ass minimale
-    txt_candidates = [
-        BUILD_DIR / "subtitles.txt",
-        VIDEOS_DIR / "subtitles.txt",
-        ROOT_DIR / "subtitles.txt",
-    ]
-    for t in txt_candidates:
-        if t.exists() and t.stat().st_size > 0:
-            print(f"[Monday] subtitles.ass mancante -> creo fallback da: {t}")
-            return _make_basic_ass_from_txt(t, subs)
-
-    raise FileNotFoundError(f"[Monday] Sottotitoli mancanti: {subs} (e nessun subtitles.txt trovato)")
+    print("[Monday] subtitles.ass mancante -> genero da audio (Whisper).")
+    return _generate_ass_from_audio_whisper(audio_path, subs)
 
 
 def _safe_title() -> str:
@@ -181,7 +222,6 @@ def _safe_tags() -> list[str]:
 
 
 def _burn_subs(base_video: Path, subs_ass: Path) -> Path:
-    # Import locale: garantisce che in GitHub Actions carichi src/subtitles.py
     import subtitles  # type: ignore
 
     fn = getattr(subtitles, "add_burned_in_subtitles", None)
@@ -194,12 +234,15 @@ def _burn_subs(base_video: Path, subs_ass: Path) -> Path:
     kwargs = {}
     if "video_path" in params:
         kwargs["video_path"] = base_video
+
     if "subtitles_ass_path" in params:
         kwargs["subtitles_ass_path"] = subs_ass
-    if "subtitles_path" in params and "subtitles_ass_path" not in kwargs:
+    elif "subtitles_path" in params:
         kwargs["subtitles_path"] = subs_ass
-    if "subtitles_file" in params and "subtitles_ass_path" not in kwargs and "subtitles_path" not in kwargs:
+    elif "subtitles_file" in params:
         kwargs["subtitles_file"] = subs_ass
+    else:
+        raise RuntimeError("Firma add_burned_in_subtitles non compatibile (manca param subs).")
 
     if "output_dir" in params:
         kwargs["output_dir"] = VIDEOS_DIR
@@ -247,7 +290,14 @@ def main() -> None:
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
 
     raw_audio = _find_audio()
-    subs_ass = _require_subtitles_ass()
+
+    # Evita bug: se input è già build/audio_trimmed.wav, quality.py scrive sullo stesso path -> fail
+    if raw_audio.name.lower() == "audio_trimmed.wav":
+        safe_in = BUILD_DIR / "voice_input.wav"
+        shutil.copyfile(raw_audio, safe_in)
+        raw_audio = safe_in
+
+    subs_ass = _ensure_subtitles_ass(raw_audio)
 
     duration = _ffprobe_duration_seconds(raw_audio)
     if duration <= 0:
