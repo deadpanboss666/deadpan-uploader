@@ -4,6 +4,7 @@ import hashlib
 import inspect
 import os
 import random
+import re
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -40,7 +41,6 @@ def _ffprobe_duration_seconds(path: Path) -> float:
 
 
 def _pick_sub_style_70_30() -> str:
-    # Rispetta SUB_STYLE se già impostata
     existing = (os.getenv("SUB_STYLE") or "").strip()
     if existing:
         return existing
@@ -61,7 +61,6 @@ def _pick_sub_style_70_30() -> str:
 
 def _find_audio() -> Path:
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
-
     candidates = [
         BUILD_DIR / "voice.mp3",
         BUILD_DIR / "voice.wav",
@@ -69,14 +68,11 @@ def _find_audio() -> Path:
         BUILD_DIR / "audio.wav",
         BUILD_DIR / "tts.wav",
         BUILD_DIR / "audio_trimmed.wav",
-        ROOT_DIR / "audio.wav",
-        ROOT_DIR / "audio.mp3",
     ]
     for p in candidates:
         if p.exists() and p.stat().st_size > 0:
             return p
 
-    # fallback: cerca un audio qualsiasi in build
     for ext in (".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"):
         items = sorted(BUILD_DIR.glob(f"*{ext}"), key=lambda x: x.stat().st_mtime, reverse=True)
         if items:
@@ -86,7 +82,6 @@ def _find_audio() -> Path:
 
 
 def _wrap_every_n_words(text: str, n: int = 5) -> str:
-    # Inserisce \N ogni n parole (ASS newline). Non tocca se già contiene \N.
     if "\\N" in text:
         return text
     words = text.split()
@@ -97,7 +92,6 @@ def _wrap_every_n_words(text: str, n: int = 5) -> str:
 
 
 def _ass_time(t: float) -> str:
-    # ASS: H:MM:SS.cc
     if t < 0:
         t = 0.0
     h = int(t // 3600)
@@ -107,21 +101,14 @@ def _ass_time(t: float) -> str:
 
 
 def _generate_ass_from_audio_whisper(audio_path: Path, ass_out: Path) -> Path:
-    """
-    Genera build/subtitles.ass trascrivendo l'audio con faster-whisper (timing reale).
-    """
     try:
         from faster_whisper import WhisperModel
     except Exception as e:
-        raise RuntimeError(
-            "Dipendenza mancante: faster-whisper. "
-            "Devi installarla nel workflow (pip install faster-whisper)."
-        ) from e
+        raise RuntimeError("Dipendenza mancante: faster-whisper (installala in workflow).") from e
 
-    model_name = (os.getenv("SUB_MODEL") or "tiny").strip()  # tiny / base / small ...
+    model_name = (os.getenv("SUB_MODEL") or "tiny").strip()
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Cache locale per modelli (utile in CI)
     cache_dir = BUILD_DIR / ".whisper_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("HF_HOME", str(cache_dir))
@@ -130,16 +117,15 @@ def _generate_ass_from_audio_whisper(audio_path: Path, ass_out: Path) -> Path:
     print(f"[Monday] Whisper model: {model_name}")
     model = WhisperModel(model_name, device="cpu", compute_type="int8")
 
-    segments, info = model.transcribe(
+    segments, _info = model.transcribe(
         str(audio_path),
         beam_size=5,
         vad_filter=True,
-        language="en",  # se vuoi auto: commenta questa riga
+        language="en",  # se vuoi auto, rimuovi questa riga
     )
 
     wrap_n = int((os.getenv("SUB_WRAP_WORDS") or "5").strip() or "5")
 
-    # Stile base (poi il tuo subtitles.py applica force_style + margini safe)
     header = """[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -165,17 +151,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         end = float(seg.end)
         if end <= start:
             end = start + 0.8
-
         txt = _wrap_every_n_words(txt, wrap_n)
-        s = _ass_time(start)
-        e = _ass_time(end)
-
-        # Margin* qui non importa troppo: subtitles.py li forza per-dialogue
-        lines.append(f"Dialogue: 0,{s},{e},Default,,0,0,0,,{txt}")
+        lines.append(f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Default,,0,0,0,,{txt}")
         count += 1
 
     if count == 0:
-        raise RuntimeError("[Monday] Whisper non ha prodotto segmenti (audio vuoto o non riconosciuto).")
+        raise RuntimeError("[Monday] Whisper non ha prodotto segmenti (audio vuoto?).")
 
     ass_out.parent.mkdir(parents=True, exist_ok=True)
     ass_out.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -187,21 +168,50 @@ def _ensure_subtitles_ass(audio_path: Path) -> Path:
     subs = BUILD_DIR / "subtitles.ass"
     if subs.exists() and subs.stat().st_size > 0:
         return subs
-
     print("[Monday] subtitles.ass mancante -> genero da audio (Whisper).")
     return _generate_ass_from_audio_whisper(audio_path, subs)
 
 
-def _safe_title() -> str:
+def _read_first_caption_for_title(ass_path: Path) -> str:
+    # prende la prima Dialogue e tira fuori testo pulito
+    txt = ass_path.read_text(encoding="utf-8", errors="ignore")
+    for line in txt.splitlines():
+        if line.startswith("Dialogue:"):
+            parts = line.split(",", 9)
+            if len(parts) == 10:
+                raw = parts[9]
+                raw = raw.replace(r"\N", " ")
+                raw = re.sub(r"\{.*?\}", "", raw)  # tag ASS
+                raw = re.sub(r"\s+", " ", raw).strip()
+                raw = re.sub(r"[^\w\s'’-]", "", raw)
+                if raw:
+                    return raw
+    return ""
+
+
+def _safe_title(subs_ass: Path) -> str:
+    # 1) se esiste build/title.txt, usalo
     title_file = BUILD_DIR / "title.txt"
     if title_file.exists():
         t = title_file.read_text(encoding="utf-8", errors="ignore").strip()
         if t:
             return t[:95]
-    return "Deadpan Auto Short"
+
+    # 2) altrimenti costruisci da prima caption + id run
+    base = _read_first_caption_for_title(subs_ass)
+    if not base:
+        base = "Deadpan Case File"
+
+    base = base[:60].strip()
+    run = os.getenv("GITHUB_RUN_NUMBER") or os.getenv("GITHUB_RUN_ID") or ""
+    suffix = f" #{run}" if run else ""
+    title = f"{base}{suffix} #shorts"
+
+    # max 100, teniamoci safe
+    return title[:95]
 
 
-def _safe_description() -> str:
+def _safe_description(subs_ass: Path) -> str:
     desc_file = BUILD_DIR / "description.txt"
     if desc_file.exists():
         d = desc_file.read_text(encoding="utf-8", errors="ignore").strip()
@@ -209,11 +219,31 @@ def _safe_description() -> str:
             if "#shorts" not in d.lower():
                 d += "\n\n#shorts"
             return d
-    return "Auto-generated short. #shorts"
+
+    # fallback: usa le prime 2-3 caption come descrizione “case”
+    txt = subs_ass.read_text(encoding="utf-8", errors="ignore")
+    lines = []
+    for line in txt.splitlines():
+        if line.startswith("Dialogue:"):
+            parts = line.split(",", 9)
+            if len(parts) == 10:
+                raw = parts[9].replace(r"\N", " ")
+                raw = re.sub(r"\{.*?\}", "", raw)
+                raw = re.sub(r"\s+", " ", raw).strip()
+                if raw:
+                    lines.append(raw)
+        if len(lines) >= 3:
+            break
+
+    body = " ".join(lines)[:250].strip()
+    if not body:
+        body = "Auto-generated short."
+
+    return f"{body}\n\n#shorts"
 
 
 def _safe_tags() -> list[str]:
-    tags = ["shorts", "deadpan", "story"]
+    tags = ["shorts", "deadpan", "story", "mystery"]
     tag_file = BUILD_DIR / "tags.txt"
     if tag_file.exists():
         extra = [x.strip() for x in tag_file.read_text(encoding="utf-8", errors="ignore").split(",") if x.strip()]
@@ -291,7 +321,7 @@ def main() -> None:
 
     raw_audio = _find_audio()
 
-    # Evita bug: se input è già build/audio_trimmed.wav, quality.py scrive sullo stesso path -> fail
+    # evita bug in-place se input è già audio_trimmed.wav
     if raw_audio.name.lower() == "audio_trimmed.wav":
         safe_in = BUILD_DIR / "voice_input.wav"
         shutil.copyfile(raw_audio, safe_in)
@@ -324,10 +354,11 @@ def main() -> None:
         print("[Monday] UPLOAD_YT=0 -> salto upload.")
         return
 
-    title = _safe_title()
-    description = _safe_description()
+    title = _safe_title(subs_ass)
+    description = _safe_description(subs_ass)
     tags = _safe_tags()
 
+    print("[Monday] Titolo:", title)
     vid = _upload(final_video=final_video, title=title, description=description, tags=tags)
     print(f"[Monday] Upload completato. Video ID: {vid}")
 
