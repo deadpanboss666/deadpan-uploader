@@ -26,6 +26,16 @@ def _run_capture(cmd: list[str]) -> str:
     return p.stdout.strip()
 
 
+def _run_ok(cmd: list[str]) -> None:
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    if p.returncode != 0:
+        raise RuntimeError(
+            f"Command failed: {' '.join(cmd)}\n"
+            f"STDOUT:\n{p.stdout}\n"
+            f"STDERR:\n{p.stderr}"
+        )
+
+
 def _ffprobe_duration_seconds(path: Path) -> float:
     out = _run_capture([
         "ffprobe", "-v", "error",
@@ -40,12 +50,10 @@ def _ffprobe_duration_seconds(path: Path) -> float:
 
 
 def _pick_sub_style_70_30() -> str:
-    # se SUB_STYLE è settato dal workflow, lo rispettiamo
     existing = (os.getenv("SUB_STYLE") or "").strip().lower()
     if existing:
         return existing
 
-    # altrimenti 70/30 stabile per ora+run
     now = datetime.now(timezone.utc).strftime("%Y%m%d%H")
     run_id = os.getenv("GITHUB_RUN_ID", "")
     sha = os.getenv("GITHUB_SHA", "")
@@ -61,17 +69,13 @@ def _pick_sub_style_70_30() -> str:
 
 
 def _clean_previous_artifacts() -> None:
-    """
-    IMPORTANTISSIMO:
-    - Evita di ricaricare sempre lo stesso video
-    - Evita di riusare sottotitoli vecchi
-    """
     paths = [
         BUILD_DIR / "subtitles.ass",
         BUILD_DIR / "video_base.mp4",
         BUILD_DIR / "video_raw.mp4",
         BUILD_DIR / "audio_trimmed.wav",
         BUILD_DIR / "audio_trimmed2.wav",
+        BUILD_DIR / "voice_for_whisper.wav",
         VIDEOS_DIR / "video_final.mp4",
         VIDEOS_DIR / "video_base.mp4",
     ]
@@ -83,26 +87,45 @@ def _clean_previous_artifacts() -> None:
             pass
 
 
-def _find_audio() -> Path:
-    BUILD_DIR.mkdir(parents=True, exist_ok=True)
+def _pick_video_source() -> Path:
+    """
+    In CI, l'input più affidabile è un mp4 in videos_to_upload.
+    Usiamo il primo disponibile in questo ordine.
+    """
     candidates = [
-        BUILD_DIR / "voice.mp3",
-        BUILD_DIR / "voice.wav",
-        BUILD_DIR / "voice.m4a",
-        BUILD_DIR / "audio.wav",
-        BUILD_DIR / "tts.wav",
-        BUILD_DIR / "audio_trimmed.wav",
+        VIDEOS_DIR / "video.mp4",
+        VIDEOS_DIR / "video_base.mp4",
+        VIDEOS_DIR / "video_final.mp4",
     ]
     for p in candidates:
         if p.exists() and p.stat().st_size > 0:
             return p
 
-    for ext in (".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"):
-        items = sorted(BUILD_DIR.glob(f"*{ext}"), key=lambda x: x.stat().st_mtime, reverse=True)
-        if items:
-            return items[0]
+    # fallback: qualunque mp4 recente
+    mp4s = sorted(VIDEOS_DIR.glob("*.mp4"), key=lambda x: x.stat().st_mtime, reverse=True)
+    if mp4s:
+        return mp4s[0]
 
-    raise FileNotFoundError("Audio non trovato in build/ (voice.mp3, voice.wav, ecc.).")
+    raise FileNotFoundError("Nessun video mp4 trovato in videos_to_upload/ (serve almeno video.mp4).")
+
+
+def _extract_audio_for_whisper(video_path: Path) -> Path:
+    """
+    Estrae un WAV mono 16k (perfetto per whisper) dal video.
+    """
+    BUILD_DIR.mkdir(parents=True, exist_ok=True)
+    out_wav = BUILD_DIR / "voice_for_whisper.wav"
+
+    _run_ok([
+        "ffmpeg", "-y",
+        "-i", str(video_path),
+        "-vn",
+        "-ac", "1",
+        "-ar", "16000",
+        "-c:a", "pcm_s16le",
+        str(out_wav),
+    ])
+    return out_wav
 
 
 def _wrap_every_n_words(text: str, n: int = 5) -> str:
@@ -124,7 +147,31 @@ def _ass_time(t: float) -> str:
     return f"{h}:{m:02d}:{s:05.2f}"
 
 
-def _generate_ass_from_audio_whisper(audio_path: Path, ass_out: Path) -> Path:
+def _write_fallback_ass(ass_out: Path, duration: float, msg: str) -> Path:
+    header = """[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 2
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,DejaVu Sans,64,&H00FFFFFF,&H00000000,&H90000000,1,0,0,0,100,100,0,0,3,10,2,2,110,110,240,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+    end = max(1.0, min(duration, 60.0))
+    msg = _wrap_every_n_words(msg.strip() or "no speech detected", 5)
+    body = f"Dialogue: 0,{_ass_time(0)},{_ass_time(end)},Default,,0,0,0,,{msg}"
+    ass_out.parent.mkdir(parents=True, exist_ok=True)
+    ass_out.write_text(header + body + "\n", encoding="utf-8")
+    print(f"[Monday] ASS fallback scritto: {ass_out}")
+    return ass_out
+
+
+def _generate_ass_from_audio_whisper(audio_path: Path, ass_out: Path, duration: float) -> Path:
     try:
         from faster_whisper import WhisperModel
     except Exception as e:
@@ -149,7 +196,6 @@ def _generate_ass_from_audio_whisper(audio_path: Path, ass_out: Path) -> Path:
 
     wrap_n = int((os.getenv("SUB_WRAP_WORDS") or "5").strip() or "5")
 
-    # ✅ SAFE-BOTTOM di default (non in alto)
     header = """[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -180,7 +226,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         count += 1
 
     if count == 0:
-        raise RuntimeError("[Monday] Whisper non ha prodotto segmenti (audio vuoto?).")
+        # ✅ NON crashiamo più: fallback
+        return _write_fallback_ass(ass_out, duration, "no speech detected")
 
     ass_out.parent.mkdir(parents=True, exist_ok=True)
     ass_out.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -188,15 +235,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     return ass_out
 
 
-def _ensure_subtitles_ass(audio_path: Path) -> Path:
-    # ✅ SEMPRE rigenera: niente riuso che “blocca” video e titolo
+def _ensure_subtitles_ass(audio_path: Path, duration: float) -> Path:
     subs = BUILD_DIR / "subtitles.ass"
     if subs.exists():
         try:
             subs.unlink()
         except Exception:
             pass
-    return _generate_ass_from_audio_whisper(audio_path, subs)
+    return _generate_ass_from_audio_whisper(audio_path, subs, duration)
 
 
 def _read_first_caption_for_title(ass_path: Path) -> str:
@@ -215,26 +261,22 @@ def _read_first_caption_for_title(ass_path: Path) -> str:
     return ""
 
 
-def _case_id(audio_path: Path, subs_ass: Path) -> str:
-    # ID unico (anche se testo iniziale è uguale)
+def _case_id(video_path: Path, subs_ass: Path) -> str:
     run = os.getenv("GITHUB_RUN_NUMBER") or os.getenv("GITHUB_RUN_ID") or ""
     stamp = datetime.now(timezone.utc).strftime("%y%m%d-%H%M")
-    h_audio = hashlib.sha1(audio_path.read_bytes()).hexdigest()[:4]
-    h_subs = hashlib.sha1(subs_ass.read_bytes()).hexdigest()[:4]
+    h_v = hashlib.sha1(video_path.read_bytes()).hexdigest()[:4]
+    h_s = hashlib.sha1(subs_ass.read_bytes()).hexdigest()[:4]
     if run:
-        return f"{stamp}-{run}-{h_audio}{h_subs}"
-    return f"{stamp}-{h_audio}{h_subs}"
+        return f"{stamp}-{run}-{h_v}{h_s}"
+    return f"{stamp}-{h_v}{h_s}"
 
 
-def _safe_title(audio_path: Path, subs_ass: Path) -> str:
+def _safe_title(video_path: Path, subs_ass: Path) -> str:
     base = _read_first_caption_for_title(subs_ass)
     if not base:
         base = "Case file"
-
     base = base[:68].strip()
-    cid = _case_id(audio_path, subs_ass)
-
-    # ✅ sempre diverso
+    cid = _case_id(video_path, subs_ass)
     title = f"{base} | Case {cid} #shorts"
     return title[:95]
 
@@ -253,10 +295,7 @@ def _safe_description(subs_ass: Path) -> str:
                     lines.append(raw)
         if len(lines) >= 3:
             break
-
-    body = " ".join(lines)[:280].strip()
-    if not body:
-        body = "Auto-generated short."
+    body = " ".join(lines)[:280].strip() or "Auto-generated short."
     return f"{body}\n\n#shorts"
 
 
@@ -331,34 +370,29 @@ def main() -> None:
     VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
 
-    # ✅ CRITICO: evita reuse
     _clean_previous_artifacts()
 
-    raw_audio = _find_audio()
-
-    # evita bug in-place se input è già audio_trimmed.wav
-    if raw_audio.name.lower() == "audio_trimmed.wav":
-        safe_in = BUILD_DIR / "voice_input.wav"
-        shutil.copyfile(raw_audio, safe_in)
-        raw_audio = safe_in
-
-    subs_ass = _ensure_subtitles_ass(raw_audio)
-
-    duration = _ffprobe_duration_seconds(raw_audio)
+    # ✅ video input in CI
+    src_video = _pick_video_source()
+    duration = _ffprobe_duration_seconds(src_video)
     if duration <= 0:
         duration = 45.0
 
+    # ✅ audio per whisper estratto dal video
+    audio_for_whisper = _extract_audio_for_whisper(src_video)
+
+    subs_ass = _ensure_subtitles_ass(audio_for_whisper, duration)
+
     from backgrounds import generate_procedural_background
-    # seed deterministico per run -> cambia sempre
     seed_str = (os.getenv("GITHUB_RUN_ID") or "") + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     seed = int(hashlib.sha256(seed_str.encode("utf-8")).hexdigest()[:8], 16)
-
     bg = generate_procedural_background(duration_s=min(duration, 60.0), seed=seed)
 
     from quality import apply_quality_pipeline
     base_video = BUILD_DIR / "video_base.mp4"
+    # apply_quality_pipeline vuole "raw_audio" (qui usiamo il wav estratto)
     apply_quality_pipeline(
-        raw_audio=raw_audio,
+        raw_audio=audio_for_whisper,
         background_path=bg,
         final_video=base_video,
         duration_limit=60,
@@ -373,7 +407,7 @@ def main() -> None:
         print("[Monday] UPLOAD_YT=0 -> salto upload.")
         return
 
-    title = _safe_title(raw_audio, subs_ass)
+    title = _safe_title(src_video, subs_ass)
     description = _safe_description(subs_ass)
     tags = _safe_tags()
 
