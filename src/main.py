@@ -40,10 +40,12 @@ def _ffprobe_duration_seconds(path: Path) -> float:
 
 
 def _pick_sub_style_70_30() -> str:
-    existing = (os.getenv("SUB_STYLE") or "").strip()
+    # se SUB_STYLE è settato dal workflow, lo rispettiamo
+    existing = (os.getenv("SUB_STYLE") or "").strip().lower()
     if existing:
         return existing
 
+    # altrimenti 70/30 stabile per ora+run
     now = datetime.now(timezone.utc).strftime("%Y%m%d%H")
     run_id = os.getenv("GITHUB_RUN_ID", "")
     sha = os.getenv("GITHUB_SHA", "")
@@ -56,6 +58,29 @@ def _pick_sub_style_70_30() -> str:
     style = "aggressive" if rng.random() < 0.70 else "cinematic"
     os.environ["SUB_STYLE"] = style
     return style
+
+
+def _clean_previous_artifacts() -> None:
+    """
+    IMPORTANTISSIMO:
+    - Evita di ricaricare sempre lo stesso video
+    - Evita di riusare sottotitoli vecchi
+    """
+    paths = [
+        BUILD_DIR / "subtitles.ass",
+        BUILD_DIR / "video_base.mp4",
+        BUILD_DIR / "video_raw.mp4",
+        BUILD_DIR / "audio_trimmed.wav",
+        BUILD_DIR / "audio_trimmed2.wav",
+        VIDEOS_DIR / "video_final.mp4",
+        VIDEOS_DIR / "video_base.mp4",
+    ]
+    for p in paths:
+        try:
+            if p.exists():
+                p.unlink()
+        except Exception:
+            pass
 
 
 def _find_audio() -> Path:
@@ -124,8 +149,7 @@ def _generate_ass_from_audio_whisper(audio_path: Path, ass_out: Path) -> Path:
 
     wrap_n = int((os.getenv("SUB_WRAP_WORDS") or "5").strip() or "5")
 
-    # ✅ SAFE-BOTTOM (non più in alto)
-    # MarginV 220/240 = zona safe sopra UI Shorts
+    # ✅ SAFE-BOTTOM di default (non in alto)
     header = """[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -165,10 +189,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 
 def _ensure_subtitles_ass(audio_path: Path) -> Path:
+    # ✅ SEMPRE rigenera: niente riuso che “blocca” video e titolo
     subs = BUILD_DIR / "subtitles.ass"
-    if subs.exists() and subs.stat().st_size > 0:
-        return subs
-    print("[Monday] subtitles.ass mancante -> genero da audio (Whisper).")
+    if subs.exists():
+        try:
+            subs.unlink()
+        except Exception:
+            pass
     return _generate_ass_from_audio_whisper(audio_path, subs)
 
 
@@ -188,43 +215,31 @@ def _read_first_caption_for_title(ass_path: Path) -> str:
     return ""
 
 
-def _unique_suffix_from_subs(subs_ass: Path) -> str:
-    # suffisso breve, stabile e diverso per ogni audio/testo
-    h = hashlib.sha1(subs_ass.read_bytes()).hexdigest()[:4]
+def _case_id(audio_path: Path, subs_ass: Path) -> str:
+    # ID unico (anche se testo iniziale è uguale)
     run = os.getenv("GITHUB_RUN_NUMBER") or os.getenv("GITHUB_RUN_ID") or ""
+    stamp = datetime.now(timezone.utc).strftime("%y%m%d-%H%M")
+    h_audio = hashlib.sha1(audio_path.read_bytes()).hexdigest()[:4]
+    h_subs = hashlib.sha1(subs_ass.read_bytes()).hexdigest()[:4]
     if run:
-        return f"{run}-{h}"
-    # fallback locale
-    t = datetime.now(timezone.utc).strftime("%m%d%H%M")
-    return f"{t}-{h}"
+        return f"{stamp}-{run}-{h_audio}{h_subs}"
+    return f"{stamp}-{h_audio}{h_subs}"
 
 
-def _safe_title(subs_ass: Path) -> str:
-    # Se build/title.txt è presente lo usa, ma rende comunque unico.
-    title_file = BUILD_DIR / "title.txt"
-    if title_file.exists():
-        t = title_file.read_text(encoding="utf-8", errors="ignore").strip()
-        if t:
-            base = t[:70].strip()
-            return f"{base} #{_unique_suffix_from_subs(subs_ass)} #shorts"[:95]
-
+def _safe_title(audio_path: Path, subs_ass: Path) -> str:
     base = _read_first_caption_for_title(subs_ass)
     if not base:
         base = "Case file"
 
-    base = base[:70].strip()
-    return f"{base} #{_unique_suffix_from_subs(subs_ass)} #shorts"[:95]
+    base = base[:68].strip()
+    cid = _case_id(audio_path, subs_ass)
+
+    # ✅ sempre diverso
+    title = f"{base} | Case {cid} #shorts"
+    return title[:95]
 
 
 def _safe_description(subs_ass: Path) -> str:
-    desc_file = BUILD_DIR / "description.txt"
-    if desc_file.exists():
-        d = desc_file.read_text(encoding="utf-8", errors="ignore").strip()
-        if d:
-            if "#shorts" not in d.lower():
-                d += "\n\n#shorts"
-            return d
-
     txt = subs_ass.read_text(encoding="utf-8", errors="ignore")
     lines = []
     for line in txt.splitlines():
@@ -246,12 +261,7 @@ def _safe_description(subs_ass: Path) -> str:
 
 
 def _safe_tags() -> list[str]:
-    tags = ["shorts", "deadpan", "story", "mystery"]
-    tag_file = BUILD_DIR / "tags.txt"
-    if tag_file.exists():
-        extra = [x.strip() for x in tag_file.read_text(encoding="utf-8", errors="ignore").split(",") if x.strip()]
-        tags = list(dict.fromkeys(tags + extra))
-    return tags[:20]
+    return ["shorts", "deadpan", "story", "mystery"]
 
 
 def _burn_subs(base_video: Path, subs_ass: Path) -> Path:
@@ -313,12 +323,16 @@ def _upload(final_video: Path, title: str, description: str, tags: list[str]) ->
 
 def main() -> None:
     chosen = _pick_sub_style_70_30()
+    os.environ["SUB_STYLE"] = chosen
     print(f"[Monday] SUB_STYLE scelto: {chosen}")
 
     do_upload = (os.getenv("UPLOAD_YT") or "1").strip() != "0"
 
     VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
+
+    # ✅ CRITICO: evita reuse
+    _clean_previous_artifacts()
 
     raw_audio = _find_audio()
 
@@ -335,7 +349,11 @@ def main() -> None:
         duration = 45.0
 
     from backgrounds import generate_procedural_background
-    bg = generate_procedural_background(duration_s=min(duration, 60.0))
+    # seed deterministico per run -> cambia sempre
+    seed_str = (os.getenv("GITHUB_RUN_ID") or "") + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    seed = int(hashlib.sha256(seed_str.encode("utf-8")).hexdigest()[:8], 16)
+
+    bg = generate_procedural_background(duration_s=min(duration, 60.0), seed=seed)
 
     from quality import apply_quality_pipeline
     base_video = BUILD_DIR / "video_base.mp4"
@@ -355,7 +373,7 @@ def main() -> None:
         print("[Monday] UPLOAD_YT=0 -> salto upload.")
         return
 
-    title = _safe_title(subs_ass)
+    title = _safe_title(raw_audio, subs_ass)
     description = _safe_description(subs_ass)
     tags = _safe_tags()
 
