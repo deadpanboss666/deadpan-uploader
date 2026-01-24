@@ -1,43 +1,42 @@
 from __future__ import annotations
 
-import hashlib
-import inspect
 import os
-import random
 import re
-import shutil
+import shlex
 import subprocess
-from datetime import datetime, timezone
+import inspect
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
-ROOT_DIR = Path(__file__).resolve().parent.parent
-BUILD_DIR = ROOT_DIR / "build"
-VIDEOS_DIR = ROOT_DIR / "videos_to_upload"
+# Local modules
+import backgrounds
+import subtitles
+
+ROOT = Path(__file__).resolve().parent.parent
+VIDEOS_DIR = ROOT / "videos_to_upload"
+BUILD_DIR = ROOT / "build"
+
+DEFAULT_W = 1080
+DEFAULT_H = 1920
+DEFAULT_FPS = 30
 
 
-def _run_capture(cmd: list[str]) -> str:
+def _run(cmd: list[str]) -> str:
+    """Run a command and return stdout, raise with nice error on failure."""
     p = subprocess.run(cmd, capture_output=True, text=True)
     if p.returncode != 0:
         raise RuntimeError(
-            f"Command failed: {' '.join(cmd)}\n"
+            "[Monday] Command failed\n"
+            f"CMD: {' '.join(shlex.quote(c) for c in cmd)}\n"
             f"STDOUT:\n{p.stdout}\n"
-            f"STDERR:\n{p.stderr}"
+            f"STDERR:\n{p.stderr}\n"
         )
     return p.stdout.strip()
 
 
-def _run_ok(cmd: list[str]) -> None:
-    p = subprocess.run(cmd, capture_output=True, text=True)
-    if p.returncode != 0:
-        raise RuntimeError(
-            f"Command failed: {' '.join(cmd)}\n"
-            f"STDOUT:\n{p.stdout}\n"
-            f"STDERR:\n{p.stderr}"
-        )
-
-
-def _ffprobe_duration_seconds(path: Path) -> float:
-    out = _run_capture([
+def _ffprobe_duration(path: Path) -> float:
+    out = _run([
         "ffprobe", "-v", "error",
         "-show_entries", "format=duration",
         "-of", "default=nw=1:nk=1",
@@ -46,374 +45,394 @@ def _ffprobe_duration_seconds(path: Path) -> float:
     try:
         return float(out)
     except Exception:
-        return 0.0
+        raise RuntimeError(f"[Monday] ffprobe duration parse failed for {path}: {out!r}")
 
 
-def _pick_sub_style_70_30() -> str:
-    existing = (os.getenv("SUB_STYLE") or "").strip().lower()
-    if existing:
-        return existing
-
-    now = datetime.now(timezone.utc).strftime("%Y%m%d%H")
-    run_id = os.getenv("GITHUB_RUN_ID", "")
-    sha = os.getenv("GITHUB_SHA", "")
-    seed_str = f"{now}|{run_id}|{sha}"
-
-    h = hashlib.sha256(seed_str.encode("utf-8")).hexdigest()
-    seed_int = int(h[:16], 16)
-    rng = random.Random(seed_int)
-
-    style = "aggressive" if rng.random() < 0.70 else "cinematic"
-    os.environ["SUB_STYLE"] = style
-    return style
+def _ffprobe_has_audio(path: Path) -> bool:
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=codec_type",
+         "-of", "default=nw=1:nk=1", str(path)],
+        capture_output=True, text=True
+    )
+    return out.returncode == 0 and "audio" in (out.stdout or "").lower()
 
 
-def _clean_previous_artifacts() -> None:
-    paths = [
-        BUILD_DIR / "subtitles.ass",
-        BUILD_DIR / "video_base.mp4",
-        BUILD_DIR / "video_raw.mp4",
-        BUILD_DIR / "audio_trimmed.wav",
-        BUILD_DIR / "audio_trimmed2.wav",
-        BUILD_DIR / "voice_for_whisper.wav",
-        VIDEOS_DIR / "video_final.mp4",
-        VIDEOS_DIR / "video_base.mp4",
-    ]
-    for p in paths:
-        try:
-            if p.exists():
-                p.unlink()
-        except Exception:
-            pass
+def _sanitize_title(s: str) -> str:
+    s = re.sub(r"\s+", " ", s).strip()
+    # Remove weird control chars
+    s = "".join(ch for ch in s if ch.isprintable())
+    return s
 
 
-def _pick_video_source() -> Path:
+def _pick_audio_file() -> Path:
     """
-    In CI, l'input più affidabile è un mp4 in videos_to_upload.
-    Usiamo il primo disponibile in questo ordine.
+    Prefer an explicit voice file (fully automatic pipeline should create this).
+    Fallback: try to extract from a video in videos_to_upload.
     """
     candidates = [
-        VIDEOS_DIR / "video.mp4",
-        VIDEOS_DIR / "video_base.mp4",
-        VIDEOS_DIR / "video_final.mp4",
+        VIDEOS_DIR / "voice.mp3",
+        VIDEOS_DIR / "voice.wav",
+        VIDEOS_DIR / "audio.mp3",
+        VIDEOS_DIR / "audio.wav",
     ]
-    for p in candidates:
-        if p.exists() and p.stat().st_size > 0:
-            return p
+    for c in candidates:
+        if c.exists() and c.stat().st_size > 0:
+            return c
 
-    # fallback: qualunque mp4 recente
-    mp4s = sorted(VIDEOS_DIR.glob("*.mp4"), key=lambda x: x.stat().st_mtime, reverse=True)
-    if mp4s:
-        return mp4s[0]
+    # fallback: extract from a video file if present
+    for vname in ["video.mp4", "input.mp4", "source.mp4"]:
+        v = VIDEOS_DIR / vname
+        if v.exists() and v.stat().st_size > 0 and _ffprobe_has_audio(v):
+            BUILD_DIR.mkdir(parents=True, exist_ok=True)
+            out_wav = BUILD_DIR / "voice_extracted.wav"
+            _run([
+                "ffmpeg", "-y",
+                "-i", str(v),
+                "-vn",
+                "-ac", "1",
+                "-ar", "48000",
+                "-c:a", "pcm_s16le",
+                str(out_wav),
+            ])
+            return out_wav
 
-    raise FileNotFoundError("Nessun video mp4 trovato in videos_to_upload/ (serve almeno video.mp4).")
+    raise FileNotFoundError(
+        "[Monday] Audio non trovato.\n"
+        "Metti un file qui: videos_to_upload/voice.mp3 (consigliato) oppure voice.wav.\n"
+        "In alternativa, videos_to_upload/video.mp4 deve contenere una traccia audio valida."
+    )
 
 
-def _extract_audio_for_whisper(video_path: Path) -> Path:
+def _read_video_info() -> tuple[str, str]:
     """
-    Estrae un WAV mono 16k (perfetto per whisper) dal video.
+    Optional: videos_to_upload/video-info.txt
+    First line = title, remaining = description.
     """
-    BUILD_DIR.mkdir(parents=True, exist_ok=True)
-    out_wav = BUILD_DIR / "voice_for_whisper.wav"
-
-    _run_ok([
-        "ffmpeg", "-y",
-        "-i", str(video_path),
-        "-vn",
-        "-ac", "1",
-        "-ar", "16000",
-        "-c:a", "pcm_s16le",
-        str(out_wav),
-    ])
-    return out_wav
-
-
-def _wrap_every_n_words(text: str, n: int = 5) -> str:
-    if r"\N" in text:
-        return text
-    words = text.split()
-    if len(words) <= n:
-        return text
-    chunks = [" ".join(words[i:i + n]) for i in range(0, len(words), n)]
-    return r"\N".join(chunks)
+    p = VIDEOS_DIR / "video-info.txt"
+    if not p.exists():
+        return ("", "")
+    txt = p.read_text(encoding="utf-8", errors="ignore").strip()
+    if not txt:
+        return ("", "")
+    lines = [l.strip() for l in txt.splitlines() if l.strip()]
+    if not lines:
+        return ("", "")
+    title = lines[0]
+    desc = "\n".join(lines[1:]).strip()
+    return (title, desc)
 
 
-def _ass_time(t: float) -> str:
+def _wrap_every_n_words(text: str, n: int) -> str:
+    """
+    Insert newline every n words (for better fitting inside 9:16).
+    """
+    words = [w for w in re.split(r"\s+", text.strip()) if w]
+    if not words:
+        return ""
+    if n <= 0:
+        return " ".join(words)
+    lines = []
+    for i in range(0, len(words), n):
+        lines.append(" ".join(words[i:i + n]))
+    return "\\N".join(lines)  # ASS newline
+
+
+@dataclass
+class AssLine:
+    start: float
+    end: float
+    text: str
+
+
+def _sec_to_ass_time(t: float) -> str:
     if t < 0:
-        t = 0.0
+        t = 0
     h = int(t // 3600)
     m = int((t % 3600) // 60)
     s = t % 60
-    return f"{h}:{m:02d}:{s:05.2f}"
+    cs = int(round((s - int(s)) * 100))
+    return f"{h:d}:{m:02d}:{int(s):02d}.{cs:02d}"
 
 
-def _write_fallback_ass(ass_out: Path, duration: float, msg: str) -> Path:
-    header = """[Script Info]
-ScriptType: v4.00+
-PlayResX: 1080
-PlayResY: 1920
-WrapStyle: 2
-ScaledBorderAndShadow: yes
+def _build_ass(lines: list[AssLine], out_path: Path, style: str = "cinematic") -> Path:
+    """
+    Create a simple ASS file compatible with ffmpeg libass.
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,DejaVu Sans,64,&H00FFFFFF,&H00000000,&H90000000,1,0,0,0,100,100,0,0,3,10,2,2,110,110,240,1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
-    end = max(1.0, min(duration, 60.0))
-    msg = _wrap_every_n_words(msg.strip() or "no speech detected", 5)
-    body = f"Dialogue: 0,{_ass_time(0)},{_ass_time(end)},Default,,0,0,0,,{msg}"
-    ass_out.parent.mkdir(parents=True, exist_ok=True)
-    ass_out.write_text(header + body + "\n", encoding="utf-8")
-    print(f"[Monday] ASS fallback scritto: {ass_out}")
-    return ass_out
-
-
-def _generate_ass_from_audio_whisper(audio_path: Path, ass_out: Path, duration: float) -> Path:
-    try:
-        from faster_whisper import WhisperModel
-    except Exception as e:
-        raise RuntimeError("Dipendenza mancante: faster-whisper (installata nel workflow?).") from e
-
-    model_name = (os.getenv("SUB_MODEL") or "tiny").strip()
-
-    cache_dir = BUILD_DIR / ".whisper_cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault("HF_HOME", str(cache_dir))
-    os.environ.setdefault("XDG_CACHE_HOME", str(cache_dir))
-
-    print(f"[Monday] Whisper model: {model_name}")
-    model = WhisperModel(model_name, device="cpu", compute_type="int8")
-
-    segments, _info = model.transcribe(
-        str(audio_path),
-        beam_size=5,
-        vad_filter=True,
-        language="en",
-    )
-
-    wrap_n = int((os.getenv("SUB_WRAP_WORDS") or "5").strip() or "5")
-
-    header = """[Script Info]
-ScriptType: v4.00+
-PlayResX: 1080
-PlayResY: 1920
-WrapStyle: 2
-ScaledBorderAndShadow: yes
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,DejaVu Sans,64,&H00FFFFFF,&H00000000,&H90000000,1,0,0,0,100,100,0,0,3,10,2,2,110,110,240,1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
-
-    lines = [header]
-    count = 0
-    for seg in segments:
-        txt = (seg.text or "").strip()
-        if not txt:
-            continue
-        start = float(seg.start)
-        end = float(seg.end)
-        if end <= start:
-            end = start + 0.8
-        txt = _wrap_every_n_words(txt, wrap_n)
-        lines.append(f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Default,,0,0,0,,{txt}")
-        count += 1
-
-    if count == 0:
-        # ✅ NON crashiamo più: fallback
-        return _write_fallback_ass(ass_out, duration, "no speech detected")
-
-    ass_out.parent.mkdir(parents=True, exist_ok=True)
-    ass_out.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"[Monday] ASS generato: {ass_out} (righe: {count})")
-    return ass_out
-
-
-def _ensure_subtitles_ass(audio_path: Path, duration: float) -> Path:
-    subs = BUILD_DIR / "subtitles.ass"
-    if subs.exists():
-        try:
-            subs.unlink()
-        except Exception:
-            pass
-    return _generate_ass_from_audio_whisper(audio_path, subs, duration)
-
-
-def _read_first_caption_for_title(ass_path: Path) -> str:
-    txt = ass_path.read_text(encoding="utf-8", errors="ignore")
-    for line in txt.splitlines():
-        if line.startswith("Dialogue:"):
-            parts = line.split(",", 9)
-            if len(parts) == 10:
-                raw = parts[9]
-                raw = raw.replace(r"\N", " ")
-                raw = re.sub(r"\{.*?\}", "", raw)
-                raw = re.sub(r"\s+", " ", raw).strip()
-                raw = re.sub(r"[^\w\s'’-]", "", raw)
-                if raw:
-                    return raw
-    return ""
-
-
-def _case_id(video_path: Path, subs_ass: Path) -> str:
-    run = os.getenv("GITHUB_RUN_NUMBER") or os.getenv("GITHUB_RUN_ID") or ""
-    stamp = datetime.now(timezone.utc).strftime("%y%m%d-%H%M")
-    h_v = hashlib.sha1(video_path.read_bytes()).hexdigest()[:4]
-    h_s = hashlib.sha1(subs_ass.read_bytes()).hexdigest()[:4]
-    if run:
-        return f"{stamp}-{run}-{h_v}{h_s}"
-    return f"{stamp}-{h_v}{h_s}"
-
-
-def _safe_title(video_path: Path, subs_ass: Path) -> str:
-    base = _read_first_caption_for_title(subs_ass)
-    if not base:
-        base = "Case file"
-    base = base[:68].strip()
-    cid = _case_id(video_path, subs_ass)
-    title = f"{base} | Case {cid} #shorts"
-    return title[:95]
-
-
-def _safe_description(subs_ass: Path) -> str:
-    txt = subs_ass.read_text(encoding="utf-8", errors="ignore")
-    lines = []
-    for line in txt.splitlines():
-        if line.startswith("Dialogue:"):
-            parts = line.split(",", 9)
-            if len(parts) == 10:
-                raw = parts[9].replace(r"\N", " ")
-                raw = re.sub(r"\{.*?\}", "", raw)
-                raw = re.sub(r"\s+", " ", raw).strip()
-                if raw:
-                    lines.append(raw)
-        if len(lines) >= 3:
-            break
-    body = " ".join(lines)[:280].strip() or "Auto-generated short."
-    return f"{body}\n\n#shorts"
-
-
-def _safe_tags() -> list[str]:
-    return ["shorts", "deadpan", "story", "mystery"]
-
-
-def _burn_subs(base_video: Path, subs_ass: Path) -> Path:
-    import subtitles  # local module
-
-    fn = getattr(subtitles, "add_burned_in_subtitles", None)
-    if fn is None:
-        raise RuntimeError("subtitles.add_burned_in_subtitles non trovato")
-
-    sig = inspect.signature(fn)
-    params = set(sig.parameters.keys())
-
-    kwargs = {"video_path": base_video}
-
-    if "subtitles_ass_path" in params:
-        kwargs["subtitles_ass_path"] = subs_ass
-    elif "subtitles_path" in params:
-        kwargs["subtitles_path"] = subs_ass
-    elif "subtitles_file" in params:
-        kwargs["subtitles_file"] = subs_ass
+    # Safe default: bottom, centered, big, readable.
+    # Use large margins so it never gets cut.
+    if style == "aggressive":
+        font_size = 78
+        margin_v = 220
+        outline = 5
     else:
-        raise RuntimeError("Firma add_burned_in_subtitles non compatibile (manca param subs).")
+        font_size = 62
+        margin_v = 210
+        outline = 4
 
-    if "output_dir" in params:
-        kwargs["output_dir"] = VIDEOS_DIR
-    if "output_name" in params:
-        kwargs["output_name"] = "video_final.mp4"
+    ass = []
+    ass.append("[Script Info]")
+    ass.append("ScriptType: v4.00+")
+    ass.append("PlayResX: 1080")
+    ass.append("PlayResY: 1920")
+    ass.append("ScaledBorderAndShadow: yes")
+    ass.append("")
+    ass.append("[V4+ Styles]")
+    ass.append("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+               "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+               "Alignment, MarginL, MarginR, MarginV, Encoding")
+    # Primary: white, Outline: black, Back: semi-transparent black box
+    ass.append(
+        "Style: Default,DejaVu Sans,"
+        f"{font_size},&H00FFFFFF,&H00000000,&H00000000,&H90000000,"
+        "1,0,0,0,100,100,0,0,3,"
+        f"{outline},1,"
+        "2,90,90,"
+        f"{margin_v},1"
+    )
+    ass.append("")
+    ass.append("[Events]")
+    ass.append("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text")
 
-    return fn(**kwargs)  # type: ignore
+    for ln in lines:
+        start = _sec_to_ass_time(ln.start)
+        end = _sec_to_ass_time(ln.end)
+        text = ln.text
+        # Avoid empty lines
+        if not text.strip():
+            continue
+        ass.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}")
+
+    out_path.write_text("\n".join(ass) + "\n", encoding="utf-8")
+    return out_path
 
 
-def _upload(final_video: Path, title: str, description: str, tags: list[str]) -> str:
+def _subtitles_from_txt(subs_txt: Path, duration: float, wrap_words: int, style: str) -> Path:
+    """
+    Turn subtitles.txt into timed ASS lines spread across duration.
+    Each input line becomes a segment.
+    """
+    raw = subs_txt.read_text(encoding="utf-8", errors="ignore").strip()
+    if not raw:
+        raise FileNotFoundError(f"[Monday] subtitles.txt vuoto: {subs_txt}")
+
+    # Split lines but keep meaningful ones
+    lines_in = [l.strip() for l in raw.splitlines() if l.strip()]
+    if not lines_in:
+        raise FileNotFoundError(f"[Monday] subtitles.txt senza righe utili: {subs_txt}")
+
+    # Timing: distribute by character weight
+    weights = [max(5, len(l)) for l in lines_in]
+    total_w = sum(weights)
+    t = 0.0
+    out_lines: list[AssLine] = []
+
+    for l, w in zip(lines_in, weights):
+        seg = (w / total_w) * max(1.0, duration)
+        seg = max(0.8, min(seg, 6.0))  # clamp readable
+        start = t
+        end = min(duration, t + seg)
+        t = end
+
+        text = _wrap_every_n_words(l, wrap_words)
+        out_lines.append(AssLine(start=start, end=end, text=text))
+
+        if t >= duration:
+            break
+
+    # Ensure last line ends at duration
+    if out_lines and out_lines[-1].end < duration:
+        out_lines[-1].end = duration
+
+    BUILD_DIR.mkdir(parents=True, exist_ok=True)
+    return _build_ass(out_lines, BUILD_DIR / "subtitles.ass", style=style)
+
+
+def _ensure_subtitles_ass(duration: float, style: str) -> Path:
+    """
+    Priority:
+    1) videos_to_upload/subtitles_wrapped.ass (if you already generated it)
+    2) videos_to_upload/subtitles.txt -> build/subtitles.ass
+    Otherwise: create a minimal subtitle from title.
+    """
+    wrap_words = int(os.getenv("SUB_WRAP_WORDS", "5") or "5")
+
+    p_ass = VIDEOS_DIR / "subtitles_wrapped.ass"
+    if p_ass.exists() and p_ass.stat().st_size > 0:
+        return p_ass
+
+    p_txt = VIDEOS_DIR / "subtitles.txt"
+    if p_txt.exists() and p_txt.stat().st_size > 0:
+        return _subtitles_from_txt(p_txt, duration=duration, wrap_words=wrap_words, style=style)
+
+    # Minimal fallback
+    title, _ = _read_video_info()
+    if not title:
+        title = "Deadpan story"
+    out_lines = [AssLine(0.0, max(2.0, min(5.0, duration)), _wrap_every_n_words(title, wrap_words))]
+    BUILD_DIR.mkdir(parents=True, exist_ok=True)
+    return _build_ass(out_lines, BUILD_DIR / "subtitles.ass", style=style)
+
+
+def _make_base_video(background_mp4: Path, audio_path: Path) -> Path:
+    BUILD_DIR.mkdir(parents=True, exist_ok=True)
+    out = BUILD_DIR / "video_base.mp4"
+
+    # Re-encode audio to AAC, keep video (bg already H264), ensure faststart.
+    _run([
+        "ffmpeg", "-y",
+        "-i", str(background_mp4),
+        "-i", str(audio_path),
+        "-c:v", "copy",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-shortest",
+        "-movflags", "+faststart",
+        str(out),
+    ])
+    return out
+
+
+def _unique_suffix() -> str:
+    # short unique ID for titles
+    return datetime.utcnow().strftime("%y%m%d-%H%M%S")
+
+
+def _make_title_and_description() -> tuple[str, str, list[str]]:
+    base_title, base_desc = _read_video_info()
+
+    if not base_title:
+        # use first line of subtitles.txt if available
+        st = VIDEOS_DIR / "subtitles.txt"
+        if st.exists():
+            first = ""
+            for l in st.read_text(encoding="utf-8", errors="ignore").splitlines():
+                l = l.strip()
+                if l:
+                    first = l
+                    break
+            base_title = first or "Deadpan Auto Short"
+        else:
+            base_title = "Deadpan Auto Short"
+
+    base_title = _sanitize_title(base_title)
+    base_desc = (base_desc or "").strip()
+
+    # Ensure #shorts present
+    if "#shorts" not in base_title.lower():
+        # avoid pushing title over limit
+        pass
+
+    # Add suffix to avoid duplicates
+    suffix = _unique_suffix()
+    title = f"{base_title} [{suffix}]"
+    title = title[:95].rstrip()
+
+    desc = base_desc
+    if "#shorts" not in desc.lower():
+        desc = (desc + "\n\n#shorts").strip()
+
+    tags = ["shorts", "deadpan", "story"]
+    return title, desc, tags
+
+
+def _call_upload(video_path: Path, title: str, description: str, tags: list[str]) -> str:
+    """
+    Call uploader.upload_video in a compatible way (signature might differ).
+    """
     import uploader  # local module
 
     fn = getattr(uploader, "upload_video", None)
     if fn is None:
-        raise RuntimeError("uploader.upload_video non trovato")
+        raise RuntimeError("[Monday] uploader.upload_video non trovato in src/uploader.py")
 
     sig = inspect.signature(fn)
-    params = set(sig.parameters.keys())
-
     kwargs = {}
-    if "video_path" in params:
-        kwargs["video_path"] = str(final_video)
-    elif "path" in params:
-        kwargs["path"] = str(final_video)
+
+    # Most common params used in your project
+    if "video_path" in sig.parameters:
+        kwargs["video_path"] = str(video_path)
     else:
-        return fn(str(final_video))  # type: ignore
+        # fallback: assume first arg is path
+        pass
 
-    if "title" in params:
+    if "title" in sig.parameters:
         kwargs["title"] = title
-    if "description" in params:
+    if "description" in sig.parameters:
         kwargs["description"] = description
-    if "tags" in params:
+    if "tags" in sig.parameters:
         kwargs["tags"] = tags
+    if "privacy_status" in sig.parameters:
+        kwargs["privacy_status"] = "public"
 
-    return fn(**kwargs)  # type: ignore
+    # call safely
+    try:
+        if kwargs:
+            return fn(**kwargs)
+        return fn(str(video_path), title, description, tags)
+    except TypeError:
+        # try minimal
+        return fn(str(video_path))
 
 
 def main() -> None:
-    chosen = _pick_sub_style_70_30()
-    os.environ["SUB_STYLE"] = chosen
-    print(f"[Monday] SUB_STYLE scelto: {chosen}")
-
-    do_upload = (os.getenv("UPLOAD_YT") or "1").strip() != "0"
-
     VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
 
-    _clean_previous_artifacts()
+    # Sub style (only affects ASS style sizing/margins)
+    sub_style = (os.getenv("SUB_STYLE", "cinematic") or "cinematic").strip().lower()
+    if sub_style not in ("cinematic", "aggressive"):
+        sub_style = "cinematic"
+    print(f"[Monday] SUB_STYLE scelto: {sub_style}")
 
-    # ✅ video input in CI
-    src_video = _pick_video_source()
-    duration = _ffprobe_duration_seconds(src_video)
-    if duration <= 0:
-        duration = 45.0
+    # Pick audio
+    audio_path = _pick_audio_file()
+    print(f"[Monday] Audio: {audio_path} (size: {audio_path.stat().st_size} byte)")
 
-    # ✅ audio per whisper estratto dal video
-    audio_for_whisper = _extract_audio_for_whisper(src_video)
+    # Duration (cap to 60s for Shorts safety unless you want more)
+    duration = _ffprobe_duration(audio_path)
+    duration_cap = float(os.getenv("DURATION_LIMIT", "60") or "60")
+    duration = min(duration, duration_cap)
+    print(f"[Monday] Durata: {duration:.2f}s (cap {duration_cap}s)")
 
-    subs_ass = _ensure_subtitles_ass(audio_for_whisper, duration)
-
-    from backgrounds import generate_procedural_background
-    seed_str = (os.getenv("GITHUB_RUN_ID") or "") + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    seed = int(hashlib.sha256(seed_str.encode("utf-8")).hexdigest()[:8], 16)
-    bg = generate_procedural_background(duration_s=min(duration, 60.0), seed=seed)
-
-    from quality import apply_quality_pipeline
-    base_video = BUILD_DIR / "video_base.mp4"
-    # apply_quality_pipeline vuole "raw_audio" (qui usiamo il wav estratto)
-    apply_quality_pipeline(
-        raw_audio=audio_for_whisper,
-        background_path=bg,
-        final_video=base_video,
-        duration_limit=60,
+    # Generate background mp4 procedural (already 1080x1920)
+    seed = int(datetime.utcnow().timestamp())
+    bg = backgrounds.generate_procedural_background(
+        duration_s=duration,
+        seed=seed,
+        width=DEFAULT_W,
+        height=DEFAULT_H,
+        fps=DEFAULT_FPS,
     )
+    print(f"[Monday] Background: {bg} (size: {bg.stat().st_size} byte)")
 
-    final_video = _burn_subs(base_video=base_video, subs_ass=subs_ass)
+    # Make base video with audio
+    base_video = _make_base_video(bg, audio_path)
+    print(f"[Monday] Base video: {base_video} (size: {base_video.stat().st_size} byte)")
 
-    size = final_video.stat().st_size if final_video.exists() else 0
-    print(f"[Monday] Video per upload: {final_video} (dimensione: {size} byte)")
+    # Ensure subtitles ASS
+    subs_ass = _ensure_subtitles_ass(duration=duration, style=sub_style)
+    print(f"[Monday] Subtitles ASS: {subs_ass} (size: {subs_ass.stat().st_size} byte)")
 
-    if not do_upload:
-        print("[Monday] UPLOAD_YT=0 -> salto upload.")
-        return
+    # Burn-in subtitles -> final in videos_to_upload
+    final_path = subtitles.add_burned_in_subtitles(
+        video_path=base_video,
+        subtitles_ass_path=subs_ass,
+        output_dir=VIDEOS_DIR,
+        output_name="video_final.mp4",
+    )
+    print(f"[Monday] Video finale: {final_path} (size: {final_path.stat().st_size} byte)")
 
-    title = _safe_title(src_video, subs_ass)
-    description = _safe_description(subs_ass)
-    tags = _safe_tags()
-
-    print("[Monday] Titolo:", title)
-    vid = _upload(final_video=final_video, title=title, description=description, tags=tags)
-    print(f"[Monday] Upload completato. Video ID: {vid}")
+    # Upload if enabled
+    upload = (os.getenv("UPLOAD_YT", "1") or "1").strip()
+    if upload == "1":
+        title, desc, tags = _make_title_and_description()
+        print(f"[Monday] Titolo che inviamo a YouTube: {title!r}")
+        vid = _call_upload(final_path, title=title, description=desc, tags=tags)
+        print(f"[Monday] Uploaded video id: {vid}")
+    else:
+        print("[Monday] UPLOAD_YT=0 -> upload saltato.")
 
 
 if __name__ == "__main__":
