@@ -10,7 +10,6 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-
 ROOT_DIR = Path(__file__).resolve().parent.parent
 BUILD_DIR = ROOT_DIR / "build"
 VIDEOS_DIR = ROOT_DIR / "videos_to_upload"
@@ -82,7 +81,7 @@ def _find_audio() -> Path:
 
 
 def _wrap_every_n_words(text: str, n: int = 5) -> str:
-    if "\\N" in text:
+    if r"\N" in text:
         return text
     words = text.split()
     if len(words) <= n:
@@ -104,10 +103,9 @@ def _generate_ass_from_audio_whisper(audio_path: Path, ass_out: Path) -> Path:
     try:
         from faster_whisper import WhisperModel
     except Exception as e:
-        raise RuntimeError("Dipendenza mancante: faster-whisper (installala in workflow).") from e
+        raise RuntimeError("Dipendenza mancante: faster-whisper (installata nel workflow?).") from e
 
     model_name = (os.getenv("SUB_MODEL") or "tiny").strip()
-    BUILD_DIR.mkdir(parents=True, exist_ok=True)
 
     cache_dir = BUILD_DIR / ".whisper_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -121,11 +119,13 @@ def _generate_ass_from_audio_whisper(audio_path: Path, ass_out: Path) -> Path:
         str(audio_path),
         beam_size=5,
         vad_filter=True,
-        language="en",  # se vuoi auto, rimuovi questa riga
+        language="en",
     )
 
     wrap_n = int((os.getenv("SUB_WRAP_WORDS") or "5").strip() or "5")
 
+    # ✅ SAFE-BOTTOM (non più in alto)
+    # MarginV 220/240 = zona safe sopra UI Shorts
     header = """[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -135,7 +135,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,DejaVu Sans,64,&H00FFFFFF,&H00000000,&H90000000,1,0,0,0,100,100,0,0,3,10,2,2,140,140,860,1
+Style: Default,DejaVu Sans,64,&H00FFFFFF,&H00000000,&H90000000,1,0,0,0,100,100,0,0,3,10,2,2,110,110,240,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -173,7 +173,6 @@ def _ensure_subtitles_ass(audio_path: Path) -> Path:
 
 
 def _read_first_caption_for_title(ass_path: Path) -> str:
-    # prende la prima Dialogue e tira fuori testo pulito
     txt = ass_path.read_text(encoding="utf-8", errors="ignore")
     for line in txt.splitlines():
         if line.startswith("Dialogue:"):
@@ -181,7 +180,7 @@ def _read_first_caption_for_title(ass_path: Path) -> str:
             if len(parts) == 10:
                 raw = parts[9]
                 raw = raw.replace(r"\N", " ")
-                raw = re.sub(r"\{.*?\}", "", raw)  # tag ASS
+                raw = re.sub(r"\{.*?\}", "", raw)
                 raw = re.sub(r"\s+", " ", raw).strip()
                 raw = re.sub(r"[^\w\s'’-]", "", raw)
                 if raw:
@@ -189,26 +188,32 @@ def _read_first_caption_for_title(ass_path: Path) -> str:
     return ""
 
 
+def _unique_suffix_from_subs(subs_ass: Path) -> str:
+    # suffisso breve, stabile e diverso per ogni audio/testo
+    h = hashlib.sha1(subs_ass.read_bytes()).hexdigest()[:4]
+    run = os.getenv("GITHUB_RUN_NUMBER") or os.getenv("GITHUB_RUN_ID") or ""
+    if run:
+        return f"{run}-{h}"
+    # fallback locale
+    t = datetime.now(timezone.utc).strftime("%m%d%H%M")
+    return f"{t}-{h}"
+
+
 def _safe_title(subs_ass: Path) -> str:
-    # 1) se esiste build/title.txt, usalo
+    # Se build/title.txt è presente lo usa, ma rende comunque unico.
     title_file = BUILD_DIR / "title.txt"
     if title_file.exists():
         t = title_file.read_text(encoding="utf-8", errors="ignore").strip()
         if t:
-            return t[:95]
+            base = t[:70].strip()
+            return f"{base} #{_unique_suffix_from_subs(subs_ass)} #shorts"[:95]
 
-    # 2) altrimenti costruisci da prima caption + id run
     base = _read_first_caption_for_title(subs_ass)
     if not base:
-        base = "Deadpan Case File"
+        base = "Case file"
 
-    base = base[:60].strip()
-    run = os.getenv("GITHUB_RUN_NUMBER") or os.getenv("GITHUB_RUN_ID") or ""
-    suffix = f" #{run}" if run else ""
-    title = f"{base}{suffix} #shorts"
-
-    # max 100, teniamoci safe
-    return title[:95]
+    base = base[:70].strip()
+    return f"{base} #{_unique_suffix_from_subs(subs_ass)} #shorts"[:95]
 
 
 def _safe_description(subs_ass: Path) -> str:
@@ -220,7 +225,6 @@ def _safe_description(subs_ass: Path) -> str:
                 d += "\n\n#shorts"
             return d
 
-    # fallback: usa le prime 2-3 caption come descrizione “case”
     txt = subs_ass.read_text(encoding="utf-8", errors="ignore")
     lines = []
     for line in txt.splitlines():
@@ -235,10 +239,9 @@ def _safe_description(subs_ass: Path) -> str:
         if len(lines) >= 3:
             break
 
-    body = " ".join(lines)[:250].strip()
+    body = " ".join(lines)[:280].strip()
     if not body:
         body = "Auto-generated short."
-
     return f"{body}\n\n#shorts"
 
 
@@ -252,7 +255,7 @@ def _safe_tags() -> list[str]:
 
 
 def _burn_subs(base_video: Path, subs_ass: Path) -> Path:
-    import subtitles  # type: ignore
+    import subtitles  # local module
 
     fn = getattr(subtitles, "add_burned_in_subtitles", None)
     if fn is None:
@@ -261,9 +264,7 @@ def _burn_subs(base_video: Path, subs_ass: Path) -> Path:
     sig = inspect.signature(fn)
     params = set(sig.parameters.keys())
 
-    kwargs = {}
-    if "video_path" in params:
-        kwargs["video_path"] = base_video
+    kwargs = {"video_path": base_video}
 
     if "subtitles_ass_path" in params:
         kwargs["subtitles_ass_path"] = subs_ass
@@ -283,7 +284,7 @@ def _burn_subs(base_video: Path, subs_ass: Path) -> Path:
 
 
 def _upload(final_video: Path, title: str, description: str, tags: list[str]) -> str:
-    import uploader  # type: ignore
+    import uploader  # local module
 
     fn = getattr(uploader, "upload_video", None)
     if fn is None:
